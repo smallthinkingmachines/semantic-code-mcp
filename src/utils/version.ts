@@ -21,6 +21,7 @@ export function getVersion(): string {
 export interface CliParseResult {
   shouldExit: boolean;
   rootDir?: string;
+  downloadModel?: boolean;
 }
 
 /**
@@ -38,11 +39,12 @@ export function handleCliArgs(args: string[]): CliParseResult {
 Usage: semantic-code-mcp [options] [directory]
 
 Arguments:
-  directory          Root directory to index (default: current directory)
+  directory              Root directory to index (default: current directory)
 
 Options:
-  -v, --version      Show version
-  -h, --help         Show help
+  -v, --version          Show version
+  -h, --help             Show help
+  --download-model       Download embedding model and exit
 
 Environment Variables:
   SEMANTIC_CODE_ROOT        Override root directory
@@ -50,6 +52,10 @@ Environment Variables:
   SEMANTIC_CODE_FORCE_GPU   Force CUDA GPU usage (set to "1")
   SEMANTIC_CODE_FORCE_CPU   Force CPU usage (set to "1")`);
     return { shouldExit: true };
+  }
+
+  if (args.includes('--download-model')) {
+    return { shouldExit: true, downloadModel: true };
   }
 
   // Check for positional directory argument (not a flag)
