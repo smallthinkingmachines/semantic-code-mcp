@@ -9,6 +9,7 @@ import {
   type TextClassificationPipeline,
 } from '@huggingface/transformers';
 import type { SearchResult } from '../store/index.js';
+import { detectDevice } from '../utils/gpu.js';
 
 // Reuse cache configuration
 env.cacheDir = process.env.HOME
@@ -53,17 +54,38 @@ async function getRerankerPipeline(
   }
 
   rerankerLoadingPromise = (async () => {
+    const { device, reason } = detectDevice();
     onProgress?.(`Loading reranker model: ${model}`);
+    onProgress?.(`Device: ${device} (${reason})`);
 
     try {
       const pipe = await pipeline('text-classification', model, {
         dtype,
+        device,
       });
       onProgress?.('Reranker model loaded');
       rerankerPipeline = pipe;
       currentRerankerModel = model;
       return pipe;
     } catch (error) {
+      // If GPU fails, try falling back to CPU
+      const { device: configuredDevice } = detectDevice();
+      if (configuredDevice !== 'cpu') {
+        onProgress?.('GPU initialization failed for reranker, falling back to CPU...');
+        try {
+          const pipe = await pipeline('text-classification', model, {
+            dtype,
+            device: 'cpu',
+          });
+          onProgress?.('Reranker model loaded (CPU fallback)');
+          rerankerPipeline = pipe;
+          currentRerankerModel = model;
+          return pipe;
+        } catch (fallbackError) {
+          // Fall through to original error
+        }
+      }
+
       rerankerLoadingPromise = null;
       throw new Error(`Failed to load reranker model: ${error}`);
     }

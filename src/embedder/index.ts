@@ -5,6 +5,7 @@
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
 import { ModelLoadError, EmbeddingGenerationError } from '../errors.js';
+import { detectDevice, type DeviceType } from '../utils/gpu.js';
 
 // Configure transformers.js to use local cache
 env.cacheDir = process.env.HOME
@@ -50,6 +51,8 @@ export interface EmbedderOptions {
   batchSize?: number;
   /** Data type for model weights (default: 'q8' for quantized) */
   dtype?: 'fp32' | 'fp16' | 'q8' | 'q4';
+  /** Device for inference (default: auto-detected) */
+  device?: DeviceType;
   /** Progress callback */
   onProgress?: (message: string) => void;
 }
@@ -84,13 +87,16 @@ async function getEmbeddingPipeline(
   }
 
   loadingPromise = (async () => {
+    const { device, reason } = detectDevice();
     onProgress?.(`Loading embedding model: ${model}`);
+    onProgress?.(`Device: ${device} (${reason})`);
     onProgress?.('This may take a moment on first run...');
 
     try {
-      // Use modern pipeline options
+      // Use modern pipeline options with device configuration
       const pipe = await pipeline('feature-extraction', model, {
         dtype, // Quantization level for performance/accuracy tradeoff
+        device, // Device for inference (auto, cpu, or cuda)
       });
 
       onProgress?.('Embedding model loaded successfully');
@@ -98,6 +104,24 @@ async function getEmbeddingPipeline(
       currentModel = model;
       return pipe;
     } catch (error) {
+      // If GPU fails, try falling back to CPU
+      const { device: configuredDevice } = detectDevice();
+      if (configuredDevice !== 'cpu') {
+        onProgress?.('GPU initialization failed, falling back to CPU...');
+        try {
+          const pipe = await pipeline('feature-extraction', model, {
+            dtype,
+            device: 'cpu',
+          });
+          onProgress?.('Embedding model loaded successfully (CPU fallback)');
+          pipelineInstance = pipe;
+          currentModel = model;
+          return pipe;
+        } catch (fallbackError) {
+          // Fall through to original error
+        }
+      }
+
       loadingPromise = null;
       const message = error instanceof Error ? error.message : String(error);
       throw new ModelLoadError(

@@ -133,6 +133,17 @@ export const SemanticSearchInputSchema = z.object({
     .string()
     .optional()
     .describe('Optional glob pattern to filter files (e.g., "*.ts", "**/*.py")'),
+  use_reranking: z
+    .boolean()
+    .default(true)
+    .describe('Use cross-encoder reranking for better precision (default: true)'),
+  candidate_multiplier: z
+    .number()
+    .int()
+    .min(1)
+    .max(20)
+    .default(5)
+    .describe('Candidate multiplier for reranking, 1-20 (default: 5)'),
 });
 
 export type SemanticSearchInput = z.infer<typeof SemanticSearchInputSchema>;
@@ -208,6 +219,16 @@ On first use, indexes the codebase (may take a moment for large projects).`,
             type: 'string',
             description: 'Optional glob pattern to filter files (e.g., "*.ts", "**/*.py")',
           },
+          use_reranking: {
+            type: 'boolean',
+            description: 'Use cross-encoder reranking for better precision (default: true)',
+            default: true,
+          },
+          candidate_multiplier: {
+            type: 'number',
+            description: 'Candidate multiplier for reranking, 1-20 (default: 5)',
+            default: 5,
+          },
         },
         required: ['query'],
       },
@@ -281,6 +302,8 @@ On first use, indexes the codebase (may take a moment for large projects).`,
       limit: validated.limit,
       path: searchPath,
       filePattern: validated.file_pattern,
+      useReranking: validated.use_reranking,
+      candidateMultiplier: validated.candidate_multiplier,
       onProgress,
     });
 

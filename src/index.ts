@@ -6,10 +6,15 @@
  * for AI coding tools (Claude Code, Cursor, Windsurf, Cline, etc.)
  */
 
+// Handle CLI args early, before loading heavy dependencies
+import { handleCliArgs } from './utils/version.js';
+if (handleCliArgs(process.argv.slice(2))) process.exit(0);
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { SemanticSearchTool } from './tools/semantic-search.js';
+import { getDeviceInfo } from './utils/gpu.js';
 
 // Get the root directory from environment or command line
 const ROOT_DIR = process.env.SEMANTIC_CODE_ROOT || process.cwd();
@@ -56,6 +61,8 @@ On first use, indexes the codebase (may take a moment for large projects).`,
       path: z.string().optional().describe('Optional directory path to scope the search'),
       limit: z.number().int().min(1).max(50).default(10).describe('Maximum number of results to return (default: 10)'),
       file_pattern: z.string().optional().describe('Optional glob pattern to filter files (e.g., "*.ts", "**/*.py")'),
+      use_reranking: z.boolean().default(true).describe('Use cross-encoder reranking for better precision (default: true)'),
+      candidate_multiplier: z.number().int().min(1).max(20).default(5).describe('Candidate multiplier for reranking, 1-20 (default: 5)'),
     },
     outputSchema: {
       results: z.array(SearchResultSchema).describe('Array of matching code chunks'),
@@ -63,7 +70,7 @@ On first use, indexes the codebase (may take a moment for large projects).`,
       query: z.string().describe('The original search query'),
     },
   },
-  async ({ query, path, limit, file_pattern }) => {
+  async ({ query, path, limit, file_pattern, use_reranking, candidate_multiplier }) => {
     // Log progress to stderr (not stdout which is for MCP protocol)
     const onProgress = (message: string) => {
       console.error(`[semantic-code-mcp] ${message}`);
@@ -71,7 +78,7 @@ On first use, indexes the codebase (may take a moment for large projects).`,
 
     try {
       const result = await searchTool.execute(
-        { query, path, limit, file_pattern },
+        { query, path, limit, file_pattern, use_reranking, candidate_multiplier },
         onProgress
       );
       const formatted = searchTool.formatResults(result);
@@ -116,6 +123,7 @@ process.on('SIGTERM', async () => {
 async function main() {
   console.error('[semantic-code-mcp] Starting server...');
   console.error(`[semantic-code-mcp] Root directory: ${ROOT_DIR}`);
+  console.error(`[semantic-code-mcp] ${getDeviceInfo()}`);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
