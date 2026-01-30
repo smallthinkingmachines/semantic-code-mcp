@@ -11,8 +11,59 @@ import { indexDirectory, FileWatcher } from '../watcher/index.js';
 import { PathTraversalError } from '../errors.js';
 
 /**
- * Check if a path is within the allowed root directory.
- * Prevents path traversal attacks (e.g., ../../../etc/passwd).
+ * Checks if a given path resolves to a location within the allowed root directory.
+ *
+ * This function prevents path traversal attacks where an attacker attempts to
+ * access files outside the intended directory by using relative path components
+ * like `../` or absolute paths.
+ *
+ * ## How it works
+ *
+ * 1. Resolves both paths to absolute form using `path.resolve()`
+ * 2. Checks if the test path starts with the root path + separator
+ * 3. Also allows the test path to equal the root exactly
+ *
+ * The separator check (`resolvedRoot + path.sep`) prevents false positives where
+ * a sibling directory shares a prefix (e.g., `/home/user/project` vs `/home/user/project2`).
+ *
+ * ## Attack vectors prevented
+ *
+ * - **Relative traversal**: `../../../etc/passwd`
+ * - **Absolute paths**: `/etc/passwd`, `/var/log/auth.log`
+ * - **Mixed traversal**: `src/../../etc/passwd`
+ * - **URL-encoded**: `..%2F..%2Fetc%2Fpasswd` (when decoded before calling)
+ * - **Null byte injection**: `../etc/passwd\x00.txt` (handled by path.resolve)
+ *
+ * ## Platform considerations
+ *
+ * - Uses `path.sep` for cross-platform compatibility (/ on Unix, \ on Windows)
+ * - `path.resolve()` normalizes separators and handles . and .. components
+ * - Windows UNC paths and drive letters are handled correctly
+ *
+ * @param testPath - The path to validate (can be relative or absolute)
+ * @param rootDir - The allowed root directory (should be an absolute path)
+ * @returns `true` if testPath resolves to a location within rootDir; `false` otherwise
+ *
+ * @example
+ * ```typescript
+ * const root = '/home/user/project';
+ *
+ * // Safe paths - within root
+ * isPathWithinRoot('src/utils', root)           // true
+ * isPathWithinRoot('/home/user/project/src', root) // true
+ * isPathWithinRoot('.', root)                   // true (equals root)
+ *
+ * // Unsafe paths - escape attempts
+ * isPathWithinRoot('../../../etc/passwd', root) // false
+ * isPathWithinRoot('/etc/passwd', root)         // false
+ * isPathWithinRoot('src/../../other', root)     // false
+ *
+ * // Edge case - sibling directory
+ * isPathWithinRoot('/home/user/project2', root) // false (not a prefix match)
+ * ```
+ *
+ * @security This function is critical for preventing unauthorized file access.
+ *           Always validate user-provided paths before using them in file operations.
  */
 function isPathWithinRoot(testPath: string, rootDir: string): boolean {
   const resolvedPath = path.resolve(rootDir, testPath);
@@ -23,8 +74,33 @@ function isPathWithinRoot(testPath: string, rootDir: string): boolean {
 }
 
 /**
- * Validate that a search path is safe and within the root directory.
- * Throws PathTraversalError if the path attempts to escape the root.
+ * Validates that a search path is safe and within the allowed root directory.
+ *
+ * This function should be called on all user-provided paths before they are
+ * used in search operations. It acts as a security gate to prevent directory
+ * traversal attacks.
+ *
+ * @param searchPath - The path provided by the user (may be relative or absolute)
+ * @param rootDir - The root directory that the search is scoped to
+ * @throws {PathTraversalError} If the path resolves to a location outside the root directory.
+ *         The error message includes the offending path for debugging/logging.
+ *
+ * @example
+ * ```typescript
+ * const root = '/home/user/project';
+ *
+ * // Safe - no error thrown
+ * validateSearchPath('src/utils', root);
+ * validateSearchPath('/home/user/project/lib', root);
+ *
+ * // Unsafe - throws PathTraversalError
+ * validateSearchPath('../../../etc/passwd', root);
+ * // Error: Path traversal detected: "../../../etc/passwd" is outside the allowed root directory
+ * ```
+ *
+ * @security Call this function before any path is used in file system operations
+ *           or passed to search filters. Failing to validate paths can lead to
+ *           information disclosure or unauthorized data access.
  */
 function validateSearchPath(searchPath: string, rootDir: string): void {
   if (!isPathWithinRoot(searchPath, rootDir)) {

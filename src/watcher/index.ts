@@ -24,8 +24,14 @@ export interface IndexerOptions {
   maxFileSize?: number;
   /** Progress callback */
   onProgress?: (message: string) => void;
-  /** Batch size for embedding */
+  /** Batch size for file processing (default: 10) */
   batchSize?: number;
+  /**
+   * Maximum number of chunks to accumulate before flushing to the store.
+   * Lower values use less memory but require more database writes.
+   * Default: 500 chunks (~5-10MB of embedding data at 768 dimensions)
+   */
+  maxChunksInMemory?: number;
 }
 
 export interface IndexStats {
@@ -152,7 +158,25 @@ async function indexFile(
 }
 
 /**
- * Full indexing of a directory
+ * Default maximum chunks to keep in memory before flushing to the store.
+ * At 768 dimensions with Float32, each embedding is ~3KB, so 500 chunks ≈ 1.5MB.
+ * This provides a balance between memory usage and database write efficiency.
+ */
+const DEFAULT_MAX_CHUNKS_IN_MEMORY = 500;
+
+/**
+ * Full indexing of a directory with streaming support for large codebases.
+ *
+ * This function processes files in batches and periodically flushes accumulated
+ * records to the store to prevent memory issues with very large codebases.
+ *
+ * Memory management:
+ * - Files are processed in configurable batches (default: 10 files)
+ * - Records are flushed to the store when maxChunksInMemory is reached (default: 500)
+ * - This limits peak memory usage to approximately maxChunksInMemory * 3KB
+ *
+ * @param options - Indexing configuration options
+ * @returns Statistics about the indexing operation
  */
 export async function indexDirectory(options: IndexerOptions): Promise<IndexStats> {
   const {
@@ -162,6 +186,7 @@ export async function indexDirectory(options: IndexerOptions): Promise<IndexStat
     maxFileSize = DEFAULT_MAX_FILE_SIZE,
     onProgress,
     batchSize = 10,
+    maxChunksInMemory = DEFAULT_MAX_CHUNKS_IN_MEMORY,
   } = options;
 
   const startTime = Date.now();
@@ -184,9 +209,22 @@ export async function indexDirectory(options: IndexerOptions): Promise<IndexStat
   // Get already indexed files for incremental update
   const indexedFiles = await store.getIndexedFiles();
 
-  // Process files in batches
-  const allRecords: VectorRecord[] = [];
+  // Process files in batches with streaming to limit memory usage
+  let pendingRecords: VectorRecord[] = [];
   const filesToDelete: string[] = [];
+
+  /**
+   * Flush pending records to the store when threshold is reached.
+   * This prevents unbounded memory growth for large codebases.
+   */
+  async function flushPendingRecords(force = false): Promise<void> {
+    if (pendingRecords.length === 0) return;
+    if (!force && pendingRecords.length < maxChunksInMemory) return;
+
+    onProgress?.(`Flushing ${pendingRecords.length} chunks to index...`);
+    await store.upsert(pendingRecords);
+    pendingRecords = []; // Clear to free memory
+  }
 
   for (let i = 0; i < files.length; i += batchSize) {
     const batch = files.slice(i, i + batchSize);
@@ -221,11 +259,14 @@ export async function indexDirectory(options: IndexerOptions): Promise<IndexStat
         }
 
         const records = await indexFile(filePath, store, onProgress);
-        allRecords.push(...records);
+        pendingRecords.push(...records);
         stats.indexedFiles++;
         stats.totalChunks += records.length;
 
         onProgress?.(`Indexed: ${path.basename(filePath)} (${records.length} chunks)`);
+
+        // Flush if we've accumulated too many chunks
+        await flushPendingRecords();
       } catch (error) {
         onProgress?.(`Error indexing ${filePath}: ${error}`);
         stats.skippedFiles++;
@@ -238,11 +279,8 @@ export async function indexDirectory(options: IndexerOptions): Promise<IndexStat
     await store.deleteByFilePath(filePath);
   }
 
-  // Upsert all new records
-  if (allRecords.length > 0) {
-    onProgress?.(`Saving ${allRecords.length} chunks to index...`);
-    await store.upsert(allRecords);
-  }
+  // Flush any remaining records
+  await flushPendingRecords(true);
 
   stats.duration = Date.now() - startTime;
 

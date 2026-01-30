@@ -1,14 +1,52 @@
 /**
  * Custom error types for semantic-code-mcp.
- * Provides typed errors for better error handling and debugging.
+ *
+ * This module defines a hierarchy of typed errors for better error handling,
+ * debugging, and user feedback. Errors are organized into two main categories:
+ *
+ * 1. **Embedder errors** - Issues with ML model loading and embedding generation
+ * 2. **Security errors** - Validation failures that indicate potential attacks
+ *
+ * ## Error Hierarchy
+ *
+ * - Error
+ *   - EmbedderError
+ *     - ModelLoadError
+ *     - EmbeddingGenerationError
+ *   - SecurityError
+ *     - PathTraversalError
+ *     - InvalidFilterError
+ *     - InvalidIdError
+ *
+ * @module errors
  */
 
 /**
- * Base error class for embedder-related errors
+ * Base error class for all embedder-related errors.
+ *
+ * Embedder errors occur during ML model operations including:
+ * - Loading the embedding model from disk/network
+ * - Tokenizing input text
+ * - Running the model forward pass
+ * - Processing model output
+ *
+ * This class supports error chaining via the `cause` property, allowing
+ * original errors to be preserved for debugging while providing user-friendly
+ * messages.
  */
 export class EmbedderError extends Error {
+  /**
+   * The original error that caused this error, if any.
+   * Useful for debugging and logging the full error chain.
+   */
   cause?: Error;
 
+  /**
+   * Creates a new EmbedderError.
+   *
+   * @param message - Human-readable description of what went wrong
+   * @param cause - Optional original error that triggered this error
+   */
   constructor(message: string, cause?: Error) {
     super(message);
     this.name = 'EmbedderError';
@@ -17,7 +55,14 @@ export class EmbedderError extends Error {
 }
 
 /**
- * Error thrown when the embedding model fails to load
+ * Error thrown when the embedding model fails to load.
+ *
+ * Common causes:
+ * - Model files not found or corrupted
+ * - Insufficient memory to load model weights
+ * - Network error when downloading model
+ * - Incompatible model format
+ * - Missing ONNX runtime or other dependencies
  */
 export class ModelLoadError extends EmbedderError {
   constructor(message: string, cause?: Error) {
@@ -27,7 +72,15 @@ export class ModelLoadError extends EmbedderError {
 }
 
 /**
- * Error thrown when embedding generation fails
+ * Error thrown when embedding generation fails.
+ *
+ * This occurs after the model is loaded but the embedding operation fails.
+ *
+ * Common causes:
+ * - Input text is malformed or too long
+ * - Model produced invalid output (NaN, empty vector)
+ * - Runtime error during inference
+ * - Tokenization failure
  */
 export class EmbeddingGenerationError extends EmbedderError {
   constructor(message: string, cause?: Error) {
@@ -37,7 +90,15 @@ export class EmbeddingGenerationError extends EmbedderError {
 }
 
 /**
- * Error thrown for security validation failures
+ * Base error class for security-related validation failures.
+ *
+ * Security errors indicate that user input failed validation in a way that
+ * suggests a potential attack (SQL injection, path traversal, etc.). These
+ * errors should be:
+ *
+ * 1. **Logged** - For security monitoring and incident response
+ * 2. **Handled gracefully** - Return a safe error message to the user
+ * 3. **Not exposed in detail** - Don't reveal validation logic to attackers
  */
 export class SecurityError extends Error {
   constructor(message: string) {
@@ -47,7 +108,20 @@ export class SecurityError extends Error {
 }
 
 /**
- * Error thrown for path traversal attempts
+ * Error thrown when a path traversal attack is detected.
+ *
+ * Path traversal (aka directory traversal) attacks attempt to access files
+ * outside the intended directory by using relative path components like "../"
+ * or absolute paths.
+ *
+ * Examples of blocked paths:
+ * - "../../../etc/passwd" - Unix system file
+ * - "..\\..\\Windows\\System32" - Windows system directory
+ * - "/etc/shadow" - Absolute path outside root
+ * - "src/../../secrets" - Traversal hidden in middle
+ *
+ * @see isPathWithinRoot - Function that performs the validation
+ * @see https://owasp.org/www-community/attacks/Path_Traversal
  */
 export class PathTraversalError extends SecurityError {
   constructor(message: string) {
@@ -57,7 +131,18 @@ export class PathTraversalError extends SecurityError {
 }
 
 /**
- * Error thrown for invalid filter patterns (potential SQL injection)
+ * Error thrown when a filter pattern contains potentially dangerous characters.
+ *
+ * Filter patterns are used in SQL LIKE clauses, so they must be validated
+ * to prevent SQL injection attacks.
+ *
+ * Examples of blocked patterns:
+ * - "'; DROP TABLE chunks--" - SQL injection
+ * - "test' OR '1'='1" - SQL logic manipulation
+ *
+ * @see validateFilterPattern - Function that performs the validation
+ * @see buildSafeFilter - Main entry point for filter construction
+ * @see https://owasp.org/www-community/attacks/SQL_Injection
  */
 export class InvalidFilterError extends SecurityError {
   constructor(message: string) {
@@ -67,7 +152,15 @@ export class InvalidFilterError extends SecurityError {
 }
 
 /**
- * Error thrown for invalid ID format
+ * Error thrown when a chunk ID contains invalid characters.
+ *
+ * Chunk IDs are used in SQL queries (e.g., DELETE WHERE id IN (...)),
+ * so they must be validated to prevent SQL injection.
+ *
+ * Valid IDs match the pattern /^[a-zA-Z0-9_-]+$/ and are generated by
+ * generateChunkId() from file paths.
+ *
+ * @see validateId - Function that performs the validation
  */
 export class InvalidIdError extends SecurityError {
   constructor(message: string) {
