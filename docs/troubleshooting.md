@@ -292,7 +292,7 @@ node --expose-gc -e "setInterval(() => console.log(process.memoryUsage()), 5000)
 1. Check if server starts correctly:
 ```bash
 # Run directly to see errors
-SEMANTIC_CODE_ROOT=/path/to/project npx semantic-code-mcp
+npx semantic-code-mcp /path/to/project
 ```
 
 2. Verify configuration in `claude_desktop_config.json`:
@@ -301,16 +301,49 @@ SEMANTIC_CODE_ROOT=/path/to/project npx semantic-code-mcp
   "mcpServers": {
     "semantic-code": {
       "command": "npx",
-      "args": ["semantic-code-mcp"],
-      "env": {
-        "SEMANTIC_CODE_ROOT": "/absolute/path/here"
-      }
+      "args": ["semantic-code-mcp"]
     }
   }
 }
 ```
 
-3. Use absolute paths (relative paths may not work)
+3. Use absolute paths when specifying a directory argument
+
+#### Wrong Directory Being Indexed
+
+**Symptoms**: Server indexes the wrong directory or can't find your code
+
+**Root directory priority**:
+1. CLI argument: `npx semantic-code-mcp /path/to/project`
+2. Environment variable: `SEMANTIC_CODE_ROOT`
+3. Current working directory: `process.cwd()`
+
+**Solutions**:
+
+1. Check what directory is being used:
+```bash
+# Look for "Root directory:" in server output
+npx semantic-code-mcp 2>&1 | head -5
+```
+
+2. For global MCP configs, always specify the directory:
+```json
+{
+  "mcpServers": {
+    "semantic-code": {
+      "command": "npx",
+      "args": ["semantic-code-mcp", "/absolute/path/to/project"]
+    }
+  }
+}
+```
+
+3. If using Claude Code directly, run from your project directory:
+```bash
+cd /path/to/project
+claude
+# The MCP server will use /path/to/project as root
+```
 
 #### Protocol Errors
 

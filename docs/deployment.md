@@ -33,13 +33,28 @@ This guide covers deploying semantic-code-mcp in production environments.
 ```bash
 npm install -g semantic-code-mcp
 
-# Run with environment variables
+# Run from any project directory (uses cwd)
+cd /path/to/project
+semantic-code-mcp
+
+# Or specify directory as argument
+semantic-code-mcp /path/to/project
+
+# Or use environment variable
 SEMANTIC_CODE_ROOT=/path/to/project semantic-code-mcp
 ```
 
 ### NPX (No Installation)
 
 ```bash
+# Uses current directory
+cd /path/to/project
+npx semantic-code-mcp
+
+# Or specify directory as argument
+npx semantic-code-mcp /path/to/project
+
+# Or use environment variable
 SEMANTIC_CODE_ROOT=/path/to/project npx semantic-code-mcp
 ```
 
@@ -113,9 +128,21 @@ Add to `~/.claude/claude_desktop_config.json`:
   "mcpServers": {
     "semantic-code": {
       "command": "npx",
-      "args": ["semantic-code-mcp"],
+      "args": ["semantic-code-mcp"]
+    }
+  }
+}
+```
+
+The server automatically uses your current working directory. To specify a different directory or customize settings:
+
+```json
+{
+  "mcpServers": {
+    "semantic-code": {
+      "command": "npx",
+      "args": ["semantic-code-mcp", "/absolute/path/to/project"],
       "env": {
-        "SEMANTIC_CODE_ROOT": "/absolute/path/to/project",
         "SEMANTIC_CODE_INDEX": "/absolute/path/to/index",
         "LOG_LEVEL": "info"
       }

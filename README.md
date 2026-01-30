@@ -44,10 +44,20 @@ Add to your Claude Code MCP configuration (`~/.claude/claude_desktop_config.json
   "mcpServers": {
     "semantic-code": {
       "command": "npx",
-      "args": ["semantic-code-mcp"],
-      "env": {
-        "SEMANTIC_CODE_ROOT": "/path/to/your/project"
-      }
+      "args": ["semantic-code-mcp"]
+    }
+  }
+}
+```
+
+The server automatically uses your current working directory. To specify a different directory:
+
+```json
+{
+  "mcpServers": {
+    "semantic-code": {
+      "command": "npx",
+      "args": ["semantic-code-mcp", "/path/to/project"]
     }
   }
 }
@@ -58,6 +68,13 @@ Add to your Claude Code MCP configuration (`~/.claude/claude_desktop_config.json
 The server uses stdio transport. Start it with:
 
 ```bash
+# Uses current directory
+npx semantic-code-mcp
+
+# Or specify a directory
+npx semantic-code-mcp /path/to/project
+
+# Or use environment variable
 SEMANTIC_CODE_ROOT=/path/to/project npx semantic-code-mcp
 ```
 

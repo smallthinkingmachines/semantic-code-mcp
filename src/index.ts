@@ -8,7 +8,8 @@
 
 // Handle CLI args early, before loading heavy dependencies
 import { handleCliArgs } from './utils/version.js';
-if (handleCliArgs(process.argv.slice(2))) process.exit(0);
+const cliResult = handleCliArgs(process.argv.slice(2));
+if (cliResult.shouldExit) process.exit(0);
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -16,8 +17,8 @@ import { z } from 'zod';
 import { SemanticSearchTool } from './tools/semantic-search.js';
 import { getDeviceInfo } from './utils/gpu.js';
 
-// Get the root directory from environment or command line
-const ROOT_DIR = process.env.SEMANTIC_CODE_ROOT || process.cwd();
+// Priority: CLI arg > env var > cwd
+const ROOT_DIR = cliResult.rootDir || process.env.SEMANTIC_CODE_ROOT || process.cwd();
 const INDEX_DIR = process.env.SEMANTIC_CODE_INDEX;
 
 // Create the semantic search tool handler

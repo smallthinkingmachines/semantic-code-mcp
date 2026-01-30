@@ -16,30 +16,45 @@ export function getVersion(): string {
 }
 
 /**
- * Handle CLI arguments. Returns true if the process should exit.
+ * Result of CLI argument parsing.
  */
-export function handleCliArgs(args: string[]): boolean {
+export interface CliParseResult {
+  shouldExit: boolean;
+  rootDir?: string;
+}
+
+/**
+ * Handle CLI arguments. Returns result with exit status and optional root directory.
+ */
+export function handleCliArgs(args: string[]): CliParseResult {
   if (args.includes('-v') || args.includes('--version')) {
     console.log(`semantic-code-mcp v${getVersion()}`);
-    return true;
+    return { shouldExit: true };
   }
 
   if (args.includes('-h') || args.includes('--help')) {
     console.log(`semantic-code-mcp - MCP server for semantic code search
 
-Usage: semantic-code-mcp [options]
+Usage: semantic-code-mcp [options] [directory]
+
+Arguments:
+  directory          Root directory to index (default: current directory)
 
 Options:
-  -v, --version    Show version
-  -h, --help       Show help
+  -v, --version      Show version
+  -h, --help         Show help
 
 Environment Variables:
-  SEMANTIC_CODE_ROOT        Root directory to index (default: current directory)
+  SEMANTIC_CODE_ROOT        Override root directory
   SEMANTIC_CODE_INDEX       Custom index location
   SEMANTIC_CODE_FORCE_GPU   Force CUDA GPU usage (set to "1")
   SEMANTIC_CODE_FORCE_CPU   Force CPU usage (set to "1")`);
-    return true;
+    return { shouldExit: true };
   }
 
-  return false;
+  // Check for positional directory argument (not a flag)
+  const positionalArgs = args.filter(arg => !arg.startsWith('-'));
+  const rootDir = positionalArgs[0];
+
+  return { shouldExit: false, rootDir };
 }
