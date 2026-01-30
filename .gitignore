@@ -13,6 +13,9 @@
 /lib
 /dist
 
+# Test coverage
+/coverage
+
 # Environment variables
 .env
 .env.local
