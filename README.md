@@ -106,10 +106,77 @@ Other languages fall back to line-based chunking.
 
 ## Configuration
 
-| Environment Variable | Description | Default |
-|---------------------|-------------|---------|
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
 | `SEMANTIC_CODE_ROOT` | Root directory to index | Current working directory |
 | `SEMANTIC_CODE_INDEX` | Custom index storage location | `.semantic-code/index/` |
+
+### Indexing Options
+
+When using the library programmatically, you can configure indexing behavior:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `batchSize` | number | 10 | Number of files to process in each batch |
+| `maxFileSize` | number | 1MB | Maximum file size to index (larger files are skipped) |
+| `maxChunksInMemory` | number | 500 | Chunks to accumulate before flushing to database |
+| `ignorePatterns` | string[] | See below | Glob patterns for files/directories to ignore |
+
+#### Memory Management
+
+The `maxChunksInMemory` option controls memory usage during indexing:
+
+- **Default (500)**: ~1.5MB of embedding data in memory at peak
+- **Lower values**: Less memory, more database writes
+- **Higher values**: More memory, fewer database writes
+
+For very large codebases (100K+ files), consider lowering this value:
+
+```typescript
+await indexDirectory({
+  rootDir: '/path/to/monorepo',
+  store,
+  maxChunksInMemory: 200,  // More frequent flushes for large repos
+  batchSize: 5,            // Smaller file batches
+});
+```
+
+#### Default Ignore Patterns
+
+The following patterns are ignored by default:
+
+```
+**/node_modules/**
+**/.git/**
+**/dist/**
+**/build/**
+**/.next/**
+**/coverage/**
+**/__pycache__/**
+**/venv/**
+**/.venv/**
+**/target/**          (Rust)
+**/vendor/**          (Go)
+**/*.min.js
+**/*.bundle.js
+**/*.map
+**/package-lock.json
+**/yarn.lock
+**/pnpm-lock.yaml
+**/.semantic-code/**
+```
+
+### Security
+
+The server includes protection against common attack vectors:
+
+- **SQL Injection**: All filter inputs are validated against a strict whitelist
+- **Path Traversal**: Search paths are validated to stay within the root directory
+- **Input Validation**: IDs and patterns are validated before database operations
+
+Invalid inputs throw typed errors (`InvalidFilterError`, `PathTraversalError`, `InvalidIdError`) that can be caught and handled appropriately.
 
 ## Storage
 
