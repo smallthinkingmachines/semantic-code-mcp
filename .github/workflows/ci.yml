@@ -35,10 +35,10 @@ jobs:
       matrix:
         include:
           # macOS ARM64 (Apple Silicon) - most common developer machine
-          - os: macos-14
+          - os: macos-latest
             name: macOS ARM64
           # macOS x64 (Intel)
-          - os: macos-13
+          - os: macos-15-large
             name: macOS x64
           # Linux x64
           - os: ubuntu-latest
@@ -65,19 +65,28 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Test MCP server startup
+      - name: Test MCP server startup (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           # Test that the server starts and responds to MCP initialize
-          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}' | timeout 30 node dist/index.js 2>&1 | tee output.txt
-
+          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}' | node dist/index.js 2>&1 | head -20 | tee output.txt
           # Verify we got a valid response
           grep -q '"result"' output.txt && echo "Server initialized successfully"
+
+      - name: Test MCP server startup (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Test that the server starts and responds to MCP initialize
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}' | node dist/index.js 2>&1 | Select-Object -First 20 | Tee-Object -FilePath output.txt
+          # Verify we got a valid response
+          if (Select-String -Path output.txt -Pattern '"result"') { Write-Host "Server initialized successfully" } else { exit 1 }
 
       - name: Run tests
         run: npm test
         # Tests may fail on some platforms due to tree-sitter ARM64 issues
-        continue-on-error: ${{ matrix.os == 'macos-14' }}
+        continue-on-error: ${{ matrix.os == 'macos-latest' }}
 
   # Node.js version compatibility
   test-node-versions:
