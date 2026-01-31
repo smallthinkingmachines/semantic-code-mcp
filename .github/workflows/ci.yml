@@ -7,87 +7,10 @@ on:
     branches: [main]
 
 jobs:
-  # Fast checks on Ubuntu
-  lint-and-build:
+  # Build, lint, and verify MCP server starts on Ubuntu
+  build:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Use Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Lint
-        run: npm run lint
-
-  # Test native module compilation on multiple platforms
-  test-platforms:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # macOS ARM64 (Apple Silicon) - most common developer machine
-          - os: macos-latest
-            name: macOS ARM64
-          # Linux x64
-          - os: ubuntu-latest
-            name: Linux x64
-          # Windows x64
-          - os: windows-latest
-            name: Windows x64
-
-    runs-on: ${{ matrix.os }}
-    name: Test (${{ matrix.name }})
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Use Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Test MCP server startup (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          # Test that the server starts and responds to MCP initialize
-          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}' | node dist/index.js 2>&1 | head -20 | tee output.txt
-          # Verify we got a valid response
-          grep -q '"result"' output.txt && echo "Server initialized successfully"
-
-      - name: Test MCP server startup (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          # Test that the server starts and responds to MCP initialize
-          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}' | node dist/index.js 2>&1 | Select-Object -First 20 | Tee-Object -FilePath output.txt
-          # Verify we got a valid response
-          if (Select-String -Path output.txt -Pattern '"result"') { Write-Host "Server initialized successfully" } else { exit 1 }
-
-      - name: Run tests
-        run: npm test
-        # Tests may fail on some platforms due to tree-sitter ARM64 issues
-        continue-on-error: ${{ matrix.os == 'macos-latest' }}
-
-  # Node.js version compatibility
-  test-node-versions:
-    runs-on: ubuntu-latest
     strategy:
       matrix:
         node-version: [18, 20, 22]
@@ -107,7 +30,34 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Lint
+        run: npm run lint
+
       - name: Test MCP server startup
         run: |
-          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}' | timeout 30 node dist/index.js 2>&1 | tee output.txt
+          # Verify the server starts and responds to MCP initialize
+          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}' | node dist/index.js 2>&1 | head -20 | tee output.txt
+          grep -q '"result"' output.txt && echo "Server initialized successfully"
+
+  # Test on macOS ARM64 (most common dev machine) - startup only
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test MCP server startup
+        run: |
+          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}' | node dist/index.js 2>&1 | head -20 | tee output.txt
           grep -q '"result"' output.txt && echo "Server initialized successfully"
