@@ -1,6 +1,6 @@
 {
   "name": "@smallthinkingmachines/semantic-code-mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "MCP server for semantic code search using AST-aware chunking and vector embeddings",
   "type": "module",
   "main": "dist/index.js",
