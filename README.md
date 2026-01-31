@@ -37,6 +37,38 @@ Using local embeddings and vector search, it bridges the gap between text search
 
 ## Installation
 
+### Quick Start (Recommended)
+
+For instant startup, install globally first:
+
+```bash
+npm install -g @smallthinkingmachines/semantic-code-mcp
+```
+
+This compiles the native tree-sitter parsers once. Then in your MCP config, use the installed binary:
+
+```json
+{
+  "mcpServers": {
+    "semantic-code": {
+      "command": "semantic-code-mcp"
+    }
+  }
+}
+```
+
+### Alternative: Using npx
+
+You can also use `npx` directly, but the **first run** will be slow as it compiles native modules:
+
+```bash
+npx @smallthinkingmachines/semantic-code-mcp
+```
+
+The MCP server connects immediately (lazy loading), but the first search triggers compilation if not already done.
+
+### As a Project Dependency
+
 ```bash
 npm install @smallthinkingmachines/semantic-code-mcp
 # or

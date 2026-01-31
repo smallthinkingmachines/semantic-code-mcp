@@ -5,10 +5,42 @@
 
 import { z } from 'zod';
 import * as path from 'path';
-import { VectorStore } from '../store/index.js';
-import { hybridSearch } from '../search/index.js';
-import { indexDirectory, FileWatcher } from '../watcher/index.js';
 import { PathTraversalError } from '../errors.js';
+
+// Lazy imports for heavy dependencies (tree-sitter, embeddings, lancedb)
+// These are loaded on first use to allow MCP server to connect immediately
+type VectorStoreType = typeof import('../store/index.js').VectorStore;
+type HybridSearchType = typeof import('../search/index.js').hybridSearch;
+type IndexDirectoryType = typeof import('../watcher/index.js').indexDirectory;
+type FileWatcherType = typeof import('../watcher/index.js').FileWatcher;
+
+let VectorStore: VectorStoreType | null = null;
+let hybridSearch: HybridSearchType | null = null;
+let indexDirectory: IndexDirectoryType | null = null;
+let FileWatcher: FileWatcherType | null = null;
+
+async function loadDependencies(onProgress?: (message: string) => void): Promise<void> {
+  if (VectorStore && hybridSearch && indexDirectory && FileWatcher) return;
+
+  onProgress?.('Initializing semantic search (first use)...');
+  onProgress?.('Loading tree-sitter parsers and vector database...');
+
+  const startTime = Date.now();
+
+  const [storeModule, searchModule, watcherModule] = await Promise.all([
+    import('../store/index.js'),
+    import('../search/index.js'),
+    import('../watcher/index.js'),
+  ]);
+
+  VectorStore = storeModule.VectorStore;
+  hybridSearch = searchModule.hybridSearch;
+  indexDirectory = watcherModule.indexDirectory;
+  FileWatcher = watcherModule.FileWatcher;
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  onProgress?.(`Dependencies loaded in ${elapsed}s`);
+}
 
 /**
  * Checks if a given path resolves to a location within the allowed root directory.
@@ -177,16 +209,36 @@ export interface SemanticSearchOutput {
  * Semantic search tool handler
  */
 export class SemanticSearchTool {
-  private store: VectorStore;
-  private watcher: FileWatcher | null = null;
+  private store: InstanceType<NonNullable<typeof VectorStore>> | null = null;
+  private watcher: InstanceType<NonNullable<typeof FileWatcher>> | null = null;
   private rootDir: string;
+  private storeDir: string;
   private indexed = false;
   private indexingPromise: Promise<void> | null = null;
+  private initPromise: Promise<void> | null = null;
 
   constructor(rootDir: string, indexDir?: string) {
     this.rootDir = path.resolve(rootDir);
-    const storeDir = indexDir || path.join(this.rootDir, '.semantic-code', 'index');
-    this.store = new VectorStore({ indexDir: storeDir });
+    this.storeDir = indexDir || path.join(this.rootDir, '.semantic-code', 'index');
+  }
+
+  /**
+   * Lazy initialization of dependencies
+   */
+  private async ensureInitialized(onProgress?: (message: string) => void): Promise<void> {
+    if (this.store) return;
+
+    if (this.initPromise) {
+      await this.initPromise;
+      return;
+    }
+
+    this.initPromise = (async () => {
+      await loadDependencies(onProgress);
+      this.store = new VectorStore!({ indexDir: this.storeDir });
+    })();
+
+    await this.initPromise;
   }
 
   /**
@@ -239,6 +291,9 @@ On first use, indexes the codebase (may take a moment for large projects).`,
    * Ensure index is built (lazy indexing)
    */
   private async ensureIndexed(onProgress?: (message: string) => void): Promise<void> {
+    // First ensure dependencies are loaded
+    await this.ensureInitialized(onProgress);
+
     if (this.indexed) return;
 
     // Avoid concurrent indexing
@@ -247,10 +302,10 @@ On first use, indexes the codebase (may take a moment for large projects).`,
       return;
     }
 
-    await this.store.initialize();
+    await this.store!.initialize();
 
     // Check if index has data
-    const isEmpty = await this.store.isEmpty();
+    const isEmpty = await this.store!.isEmpty();
     if (!isEmpty) {
       this.indexed = true;
       return;
@@ -260,9 +315,9 @@ On first use, indexes the codebase (may take a moment for large projects).`,
     this.indexingPromise = (async () => {
       onProgress?.('Building semantic index (first-time setup)...');
 
-      await indexDirectory({
+      await indexDirectory!({
         rootDir: this.rootDir,
-        store: this.store,
+        store: this.store!,
         onProgress,
       });
 
@@ -298,7 +353,7 @@ On first use, indexes the codebase (may take a moment for large projects).`,
     }
 
     // Perform hybrid search
-    const results = await hybridSearch(validated.query, this.store, {
+    const results = await hybridSearch!(validated.query, this.store!, {
       limit: validated.limit,
       path: searchPath,
       filePattern: validated.file_pattern,
@@ -308,7 +363,7 @@ On first use, indexes the codebase (may take a moment for large projects).`,
     });
 
     // Get index stats
-    const totalChunks = await this.store.count();
+    const totalChunks = await this.store!.count();
 
     return {
       results: results.map((r) => ({
@@ -372,12 +427,13 @@ On first use, indexes the codebase (may take a moment for large projects).`,
   /**
    * Start file watcher for live updates
    */
-  startWatcher(onProgress?: (message: string) => void): void {
+  async startWatcher(onProgress?: (message: string) => void): Promise<void> {
+    await this.ensureInitialized(onProgress);
     if (this.watcher?.isRunning()) return;
 
-    this.watcher = new FileWatcher({
+    this.watcher = new FileWatcher!({
       rootDir: this.rootDir,
-      store: this.store,
+      store: this.store!,
       onProgress,
     });
     this.watcher.start();
@@ -397,7 +453,8 @@ On first use, indexes the codebase (may take a moment for large projects).`,
    * Force re-index
    */
   async reindex(onProgress?: (message: string) => void): Promise<void> {
-    await this.store.clear();
+    await this.ensureInitialized(onProgress);
+    await this.store!.clear();
     this.indexed = false;
     await this.ensureIndexed(onProgress);
   }
@@ -407,6 +464,8 @@ On first use, indexes the codebase (may take a moment for large projects).`,
    */
   async close(): Promise<void> {
     await this.stopWatcher();
-    await this.store.close();
+    if (this.store) {
+      await this.store.close();
+    }
   }
 }
