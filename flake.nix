@@ -1,5 +1,5 @@
 {
-  description = "OpenCode Semantic Search MCP Server - Semantic code search tool for OpenCode";
+  description = "Semantic Code Search MCP Server - Find code by meaning using AST-aware chunking, vector embeddings, and hybrid search";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
