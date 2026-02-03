@@ -75,13 +75,35 @@ describe('SQL Injection Prevention', () => {
       expect(sanitizePathPattern('src.test.file')).toBe('src_test_file');
     });
 
-    it('should throw on SQL injection attempts', () => {
-      expect(() => sanitizePathPattern("src'; DROP TABLE--/")).toThrow(
-        InvalidFilterError
-      );
-      expect(() => sanitizePathPattern("test' OR '1'='1")).toThrow(
-        InvalidFilterError
-      );
+    it('should handle @ symbols in scoped package paths', () => {
+      expect(sanitizePathPattern('@scope/package/file')).toBe('_scope_package_file');
+      expect(sanitizePathPattern('node_modules/@types/node')).toBe('node_modules__types_node');
+    });
+
+    it('should handle spaces in paths', () => {
+      expect(sanitizePathPattern('path with spaces/file')).toBe('path_with_spaces_file');
+      expect(sanitizePathPattern('My Documents/project')).toBe('My_Documents_project');
+    });
+
+    it('should handle parentheses in paths', () => {
+      expect(sanitizePathPattern('file (copy)')).toBe('file__copy_');
+      expect(sanitizePathPattern('Component(HOC).tsx')).toBe('Component_HOC__tsx');
+    });
+
+    it('should handle plus signs in paths', () => {
+      expect(sanitizePathPattern('c++/main')).toBe('c___main');
+    });
+
+    it('should handle colons in Windows paths', () => {
+      expect(sanitizePathPattern('C:\\Users\\test')).toBe('C__Users_test');
+    });
+
+    it('should sanitize SQL injection attempts instead of throwing', () => {
+      // These now get sanitized rather than throwing, since the catch-all
+      // replaces all unsafe characters with underscores
+      const result = sanitizePathPattern("src'; DROP TABLE--/");
+      expect(result).toBe('src___DROP_TABLE--_');
+      expect(result).toMatch(/^[a-zA-Z0-9_\-%]+$/);
     });
   });
 
@@ -93,10 +115,12 @@ describe('SQL Injection Prevention', () => {
       expect(sanitizeGlobPattern('src/??.ts')).toBe('src____ts');
     });
 
-    it('should throw on SQL injection in glob patterns', () => {
-      expect(() => sanitizeGlobPattern("*'; DROP TABLE--")).toThrow(
-        InvalidFilterError
-      );
+    it('should sanitize SQL injection in glob patterns', () => {
+      // SQL injection attempts are now sanitized (unsafe chars replaced with _)
+      const result = sanitizeGlobPattern("*'; DROP TABLE--");
+      // * -> %, ' -> _, ; -> _, space -> _
+      expect(result).toBe('%___DROP_TABLE--');
+      expect(result).toMatch(/^[a-zA-Z0-9_%-]+$/);
     });
   });
 
@@ -164,16 +188,21 @@ describe('SQL Injection Prevention', () => {
       expect(result).toBe("id LIKE 'src%' AND language = 'typescript'");
     });
 
-    it('should throw on SQL injection in path', () => {
-      expect(() => buildSafeFilter({ path: "'; DROP TABLE--" })).toThrow(
-        InvalidFilterError
-      );
+    it('should sanitize SQL injection in path', () => {
+      // SQL injection attempts are now sanitized (unsafe chars replaced with _)
+      const result = buildSafeFilter({ path: "'; DROP TABLE--" });
+      expect(result).toBe("id LIKE '___DROP_TABLE--%'");
+      // The sanitized inner value contains only safe characters
+      // (the outer quotes are SQL string delimiters, not part of the user input)
+      const innerValue = result?.match(/id LIKE '([^']+)'/)?.[1];
+      expect(innerValue).toMatch(/^[a-zA-Z0-9_%-]+$/);
     });
 
-    it('should throw on SQL injection in file pattern', () => {
-      expect(() => buildSafeFilter({ filePattern: "*.ts'; DROP TABLE--" })).toThrow(
-        InvalidFilterError
-      );
+    it('should sanitize SQL injection in file pattern', () => {
+      // SQL injection attempts are now sanitized (unsafe chars replaced with _)
+      const result = buildSafeFilter({ filePattern: "*.ts'; DROP TABLE--" });
+      // * -> %, . -> _, ' -> _, ; -> _, space -> _, etc.
+      expect(result).toBe("id LIKE '%%_ts___DROP_TABLE--'");
     });
   });
 
@@ -192,23 +221,34 @@ describe('SQL Injection Prevention', () => {
     ];
 
     it.each(sqlInjectionPayloads)(
-      'should reject injection payload: %s',
+      'should reject injection payload via validateFilterPattern: %s',
       (payload) => {
         expect(validateFilterPattern(payload)).toBe(false);
       }
     );
 
     it.each(sqlInjectionPayloads)(
-      'should throw on sanitizePathPattern with: %s',
+      'should sanitize injection payload and produce safe result: %s',
       (payload) => {
-        expect(() => sanitizePathPattern(payload)).toThrow(InvalidFilterError);
+        // sanitizePathPattern now sanitizes rather than throws
+        const result = sanitizePathPattern(payload);
+        // The result should only contain safe characters
+        expect(validateFilterPattern(result)).toBe(true);
+        // Should not contain any SQL-dangerous characters
+        expect(result).not.toMatch(/['";\(\)=<>]/);
       }
     );
 
     it.each(sqlInjectionPayloads)(
-      'should throw on buildSafeFilter path with: %s',
+      'should produce safe filter for buildSafeFilter path: %s',
       (payload) => {
-        expect(() => buildSafeFilter({ path: payload })).toThrow(InvalidFilterError);
+        // buildSafeFilter now sanitizes rather than throws
+        const result = buildSafeFilter({ path: payload });
+        // Should be a valid LIKE condition
+        expect(result).toMatch(/^id LIKE '[a-zA-Z0-9_%-]+'$/);
+        // Should not contain unescaped quotes (the one at start/end are the SQL string delimiters)
+        const innerContent = result?.slice(9, -1); // Extract content between "id LIKE '" and "'"
+        expect(innerContent).not.toContain("'");
       }
     );
   });

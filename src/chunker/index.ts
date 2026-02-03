@@ -172,10 +172,28 @@ function extractDocstring(
 }
 
 /**
- * Generate chunk ID from file path and position
+ * Generate chunk ID from file path and position.
+ *
+ * Normalizes file paths to create IDs that match the allowed pattern
+ * `/^[a-zA-Z0-9_-]+$/` used by the store's ID validation.
+ *
+ * Characters replaced:
+ * - `/` and `\` (path separators) → `_`
+ * - `.` (dots) → `_`
+ * - `@`, spaces, parentheses, `+`, `:`, and any other non-alphanumeric
+ *   characters (except `-` and `_`) → `_`
+ *
+ * This handles paths like:
+ * - `@scope/package/file.ts` → `_scope_package_file_ts`
+ * - `path with spaces/file.ts` → `path_with_spaces_file_ts`
+ * - `file (copy).ts` → `file__copy__ts`
+ * - `c++/main.cpp` → `c___main_cpp`
  */
 function generateChunkId(filePath: string, startLine: number): string {
-  const normalized = filePath.replace(/[\\/]/g, '_').replace(/\./g, '_');
+  const normalized = filePath
+    .replace(/[\\/]/g, '_')         // path separators
+    .replace(/\./g, '_')            // dots
+    .replace(/[^a-zA-Z0-9_-]/g, '_'); // any remaining unsafe chars
   return `${normalized}_L${startLine}`;
 }
 

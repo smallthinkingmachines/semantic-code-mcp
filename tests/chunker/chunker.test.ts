@@ -394,6 +394,58 @@ function c() { return 3; }
 
         expect(chunks[0]?.id).toContain('path_to_file_ts');
       });
+
+      it('should handle @ symbols in paths (scoped packages)', async () => {
+        const code = `function test() { return true; }`;
+        const chunks = await chunkCode(code, '/node_modules/@scope/package/index.ts');
+
+        // @ should be replaced with underscore
+        expect(chunks[0]?.id).toContain('_scope_package_index_ts');
+        // ID should only contain safe characters
+        expect(chunks[0]?.id).toMatch(/^[a-zA-Z0-9_-]+$/);
+      });
+
+      it('should handle spaces in paths', async () => {
+        const code = `function test() { return true; }`;
+        const chunks = await chunkCode(code, '/path with spaces/my file.ts');
+
+        // Spaces should be replaced with underscores
+        expect(chunks[0]?.id).toContain('path_with_spaces_my_file_ts');
+        expect(chunks[0]?.id).toMatch(/^[a-zA-Z0-9_-]+$/);
+      });
+
+      it('should handle parentheses in paths', async () => {
+        const code = `function test() { return true; }`;
+        const chunks = await chunkCode(code, '/test/file (copy).ts');
+
+        // Parentheses should be replaced with underscores
+        expect(chunks[0]?.id).toContain('file__copy__ts');
+        expect(chunks[0]?.id).toMatch(/^[a-zA-Z0-9_-]+$/);
+      });
+
+      it('should handle plus signs in paths (c++ directories)', async () => {
+        const code = `
+#include <iostream>
+int main() {
+    std::cout << "Hello";
+    return 0;
+}
+`;
+        const chunks = await chunkCode(code, '/projects/c++/main.cpp');
+
+        // Plus signs should be replaced with underscores
+        expect(chunks[0]?.id).toContain('c___main_cpp');
+        expect(chunks[0]?.id).toMatch(/^[a-zA-Z0-9_-]+$/);
+      });
+
+      it('should handle colons in Windows-style paths', async () => {
+        const code = `function test() { return true; }`;
+        const chunks = await chunkCode(code, 'C:\\Users\\test\\file.ts');
+
+        // Colons and backslashes should be replaced with underscores
+        expect(chunks[0]?.id).toContain('C__Users_test_file_ts');
+        expect(chunks[0]?.id).toMatch(/^[a-zA-Z0-9_-]+$/);
+      });
     });
 
     describe('Fallback chunking', () => {

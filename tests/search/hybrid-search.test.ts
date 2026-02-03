@@ -60,16 +60,21 @@ describe('Hybrid Search', () => {
       expect(filter).toContain("language = 'typescript'");
     });
 
-    it('should throw on SQL injection in path', () => {
-      expect(() => buildSafeFilter({ path: "'; DROP TABLE--" })).toThrow(
-        InvalidFilterError
-      );
+    it('should sanitize SQL injection in path', () => {
+      // SQL injection attempts are now sanitized (unsafe chars replaced with _)
+      const result = buildSafeFilter({ path: "'; DROP TABLE--" });
+      expect(result).toBe("id LIKE '___DROP_TABLE--%'");
+      // The inner value should only contain safe characters
+      const innerValue = result?.match(/id LIKE '([^']+)'/)?.[1];
+      expect(innerValue).toMatch(/^[a-zA-Z0-9_%-]+$/);
     });
 
-    it('should throw on SQL injection in file pattern', () => {
-      expect(() =>
-        buildSafeFilter({ filePattern: "**/*'; DROP TABLE--" })
-      ).toThrow(InvalidFilterError);
+    it('should sanitize SQL injection in file pattern', () => {
+      // SQL injection attempts are now sanitized (unsafe chars replaced with _)
+      const result = buildSafeFilter({ filePattern: "**/*'; DROP TABLE--" });
+      // ** -> %, / -> _, * -> %, ' -> _, ; -> _, space -> _
+      // buildFilePatternCondition adds leading % for suffix matching
+      expect(result).toBe("id LIKE '%%_%___DROP_TABLE--'");
     });
   });
 

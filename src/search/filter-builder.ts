@@ -108,12 +108,14 @@ export function validateFilterPattern(pattern: string): boolean {
  * ```
  */
 export function sanitizePathPattern(path: string): string {
-  // Replace path separators and dots with underscores
+  // Replace path separators, dots, and any other non-safe characters
+  // This must match the normalization in generateChunkId (chunker/index.ts)
   const sanitized = path
-    .replace(/[\\/]/g, '_')
-    .replace(/\./g, '_');
+    .replace(/[\\/]/g, '_')           // path separators
+    .replace(/\./g, '_')              // dots
+    .replace(/[^a-zA-Z0-9_-]/g, '_'); // any remaining unsafe chars
 
-  // Validate the result
+  // Validate the result (should always pass now, but kept for defense-in-depth)
   if (!validateFilterPattern(sanitized)) {
     throw new InvalidFilterError(
       `Invalid path pattern: contains disallowed characters`
@@ -147,14 +149,16 @@ export function sanitizePathPattern(path: string): string {
  */
 export function sanitizeGlobPattern(pattern: string): string {
   // Convert glob patterns to SQL LIKE patterns
+  // This must match the normalization in generateChunkId (chunker/index.ts)
   const sanitized = pattern
-    .replace(/\*\*/g, '%')      // ** -> %
-    .replace(/\*/g, '%')         // * -> %
-    .replace(/\?/g, '_')         // ? -> _
-    .replace(/[\\/]/g, '_')     // path separators -> _
-    .replace(/\./g, '_');        // . -> _
+    .replace(/\*\*/g, '%')            // ** -> %
+    .replace(/\*/g, '%')              // * -> %
+    .replace(/\?/g, '_')              // ? -> _
+    .replace(/[\\/]/g, '_')           // path separators -> _
+    .replace(/\./g, '_')              // . -> _
+    .replace(/[^a-zA-Z0-9_%-]/g, '_'); // any remaining unsafe chars (keep % for LIKE)
 
-  // Validate the result
+  // Validate the result (should always pass now, but kept for defense-in-depth)
   if (!validateFilterPattern(sanitized)) {
     throw new InvalidFilterError(
       `Invalid file pattern: contains disallowed characters`
