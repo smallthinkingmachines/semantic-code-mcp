@@ -168,3 +168,19 @@ export class InvalidIdError extends SecurityError {
     this.name = 'InvalidIdError';
   }
 }
+
+/**
+ * Error thrown when a graph operation fails.
+ *
+ * Graph errors are non-fatal — the system continues to function
+ * without graph capabilities when these occur.
+ */
+export class GraphError extends Error {
+  cause?: Error;
+
+  constructor(message: string, cause?: Error) {
+    super(message);
+    this.name = 'GraphError';
+    this.cause = cause;
+  }
+}
