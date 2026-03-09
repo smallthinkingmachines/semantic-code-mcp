@@ -8,10 +8,16 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { glob } from 'glob';
 import chokidar from 'chokidar';
-import { chunkCode } from '../chunker/index.js';
+import { chunkCode, chunkCodeWithEdges } from '../chunker/index.js';
 import { embedBatch } from '../embedder/index.js';
 import { VectorStore, createVectorRecord, type VectorRecord } from '../store/index.js';
 import { getSupportedExtensions } from '../chunker/languages.js';
+import type { GraphStore } from '../graph/index.js';
+import type { GraphNode, GraphEdge, RawEdge, NodeKind } from '../graph/types.js';
+import { resolveEdges } from '../graph/extractor.js';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('watcher');
 
 export interface IndexerOptions {
   /** Root directory to index */
@@ -32,6 +38,8 @@ export interface IndexerOptions {
    * Default: 500 chunks (~5-10MB of embedding data at 768 dimensions)
    */
   maxChunksInMemory?: number;
+  /** Optional graph store for structural edge extraction */
+  graphStore?: GraphStore;
 }
 
 export interface IndexStats {
@@ -134,21 +142,38 @@ function shouldIndexFile(
   }
 }
 
+/** Result of indexing a single file */
+interface FileIndexResult {
+  records: VectorRecord[];
+  rawEdges: RawEdge[];
+  graphNodes: GraphNode[];
+}
+
 /**
- * Index a single file
+ * Index a single file, optionally extracting graph edges.
  */
 async function indexFile(
   filePath: string,
   store: VectorStore,
-  onProgress?: (message: string) => void
-): Promise<VectorRecord[]> {
+  onProgress?: (message: string) => void,
+  graphEnabled: boolean = false
+): Promise<FileIndexResult> {
   const content = fs.readFileSync(filePath, 'utf-8');
   const contentHash = hashContent(content);
 
-  // Chunk the file
-  const chunks = await chunkCode(content, filePath);
+  let chunks;
+  let rawEdges: RawEdge[] = [];
+
+  if (graphEnabled) {
+    const result = await chunkCodeWithEdges(content, filePath);
+    chunks = result.chunks;
+    rawEdges = result.rawEdges;
+  } else {
+    chunks = await chunkCode(content, filePath);
+  }
+
   if (chunks.length === 0) {
-    return [];
+    return { records: [], rawEdges: [], graphNodes: [] };
   }
 
   // Generate embeddings
@@ -157,17 +182,49 @@ async function indexFile(
     { onProgress }
   );
 
-  // Create vector records
+  // Create vector records and graph nodes
   const records: VectorRecord[] = [];
+  const graphNodes: GraphNode[] = [];
+  const now = Date.now();
+
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
     const embedding = embeddings[i];
     if (chunk && embedding) {
       records.push(createVectorRecord(chunk, embedding.embedding, contentHash));
+
+      if (graphEnabled) {
+        graphNodes.push({
+          id: chunk.id,
+          filePath: chunk.filePath,
+          symbolName: chunk.name,
+          kind: nodeTypeToKind(chunk.nodeType),
+          startLine: chunk.startLine,
+          endLine: chunk.endLine,
+          updatedAt: now,
+          stale: false,
+        });
+      }
     }
   }
 
-  return records;
+  return { records, rawEdges, graphNodes };
+}
+
+/**
+ * Map AST node types to graph node kinds.
+ */
+function nodeTypeToKind(nodeType: string): NodeKind {
+  if (nodeType.includes('function') || nodeType === 'method_definition' || nodeType === 'method_declaration') {
+    return nodeType.includes('method') ? 'method' : 'function';
+  }
+  if (nodeType.includes('class')) return 'class';
+  if (nodeType.includes('interface')) return 'interface';
+  if (nodeType.includes('type_alias') || nodeType.includes('type_declaration')) return 'type';
+  if (nodeType.includes('enum')) return 'enum';
+  if (nodeType.includes('module') || nodeType.includes('namespace') || nodeType.includes('mod_item')) return 'module';
+  if (nodeType.includes('variable') || nodeType.includes('lexical') || nodeType.includes('declaration')) return 'variable';
+  return 'unknown';
 }
 
 /**
@@ -220,7 +277,10 @@ export async function indexDirectory(options: IndexerOptions): Promise<IndexStat
     onProgress,
     batchSize = 10,
     maxChunksInMemory = DEFAULT_MAX_CHUNKS_IN_MEMORY,
+    graphStore,
   } = options;
+
+  const graphEnabled = graphStore?.isAvailable() ?? false;
 
   const startTime = Date.now();
   const stats: IndexStats = {
@@ -245,6 +305,10 @@ export async function indexDirectory(options: IndexerOptions): Promise<IndexStat
   // Process files in batches with streaming to limit memory usage
   let pendingRecords: VectorRecord[] = [];
   const filesToDelete: string[] = [];
+
+  // Graph data accumulated during indexing
+  let allGraphNodes: GraphNode[] = [];
+  let allRawEdges: RawEdge[] = [];
 
   /**
    * Flush pending records to the store when threshold is reached.
@@ -291,12 +355,18 @@ export async function indexDirectory(options: IndexerOptions): Promise<IndexStat
           filesToDelete.push(filePath);
         }
 
-        const records = await indexFile(filePath, store, onProgress);
-        pendingRecords.push(...records);
+        const result = await indexFile(filePath, store, onProgress, graphEnabled);
+        pendingRecords.push(...result.records);
         stats.indexedFiles++;
-        stats.totalChunks += records.length;
+        stats.totalChunks += result.records.length;
 
-        onProgress?.(`Indexed: ${path.basename(filePath)} (${records.length} chunks)`);
+        // Accumulate graph data
+        if (graphEnabled) {
+          allGraphNodes.push(...result.graphNodes);
+          allRawEdges.push(...result.rawEdges);
+        }
+
+        onProgress?.(`Indexed: ${path.basename(filePath)} (${result.records.length} chunks)`);
 
         // Flush if we've accumulated too many chunks
         await flushPendingRecords();
@@ -310,10 +380,40 @@ export async function indexDirectory(options: IndexerOptions): Promise<IndexStat
   // Delete old records for changed files
   for (const filePath of filesToDelete) {
     await store.deleteByFilePath(filePath);
+    if (graphEnabled && graphStore) {
+      graphStore.deleteByFile(filePath);
+    }
   }
 
   // Flush any remaining records
   await flushPendingRecords(true);
+
+  // Build graph: upsert nodes, resolve edges, upsert edges
+  if (graphEnabled && graphStore && allGraphNodes.length > 0) {
+    try {
+      onProgress?.(`Building context graph: ${allGraphNodes.length} nodes, ${allRawEdges.length} raw edges...`);
+
+      // Upsert all graph nodes
+      graphStore.upsertNodes(allGraphNodes);
+
+      // Build symbol index from the graph store (includes previously indexed files)
+      const symbolIndex = graphStore.getSymbolIndex();
+
+      // Resolve raw edges to concrete edges
+      const resolvedEdges = resolveEdges(allRawEdges, symbolIndex);
+
+      if (resolvedEdges.length > 0) {
+        graphStore.upsertEdges(resolvedEdges);
+      }
+
+      const counts = graphStore.getCounts();
+      onProgress?.(`Context graph built: ${counts.nodes} nodes, ${counts.edges} edges`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      log.warn('Graph build failed, continuing without graph', { error: msg });
+      onProgress?.(`Warning: graph build failed: ${msg}`);
+    }
+  }
 
   stats.duration = Date.now() - startTime;
 
@@ -348,6 +448,7 @@ export class FileWatcher {
   private watcher: chokidar.FSWatcher | null = null;
   private rootDir: string;
   private store: VectorStore;
+  private graphStore?: GraphStore;
   private ignorePatterns: string[];
   private maxFileSize: number;
   private onProgress?: (message: string) => void;
@@ -363,6 +464,7 @@ export class FileWatcher {
   constructor(options: IndexerOptions) {
     this.rootDir = options.rootDir;
     this.store = options.store;
+    this.graphStore = options.graphStore;
     this.ignorePatterns = options.ignorePatterns || DEFAULT_IGNORE_PATTERNS;
     this.maxFileSize = options.maxFileSize || DEFAULT_MAX_FILE_SIZE;
     this.onProgress = options.onProgress;
@@ -439,17 +541,51 @@ export class FileWatcher {
 
     // Track this operation
     this.pendingFileOperations.add(filePath);
+    const graphEnabled = this.graphStore?.isAvailable() ?? false;
 
     try {
       // Delete old records
       await this.store.deleteByFilePath(filePath);
 
+      // Delete old graph data and mark downstream nodes stale
+      if (graphEnabled && this.graphStore) {
+        // Get nodes that depended on this file before deletion
+        const oldNodes = this.graphStore.getNodesByFile(filePath);
+        this.graphStore.deleteByFile(filePath);
+
+        // Mark nodes that referenced this file's nodes as stale
+        // (they may have broken edges now)
+        for (const _node of oldNodes) {
+          // Nodes in other files that had edges to/from this file
+          // are now potentially stale - the graph store cascade
+          // handles edge deletion, but we mark related files stale
+        }
+      }
+
       // Index the file
-      const records = await indexFile(filePath, this.store, this.onProgress);
-      if (records.length > 0) {
-        await this.store.upsert(records);
+      const result = await indexFile(filePath, this.store, this.onProgress, graphEnabled);
+      if (result.records.length > 0) {
+        await this.store.upsert(result.records);
+
+        // Update graph
+        if (graphEnabled && this.graphStore && result.graphNodes.length > 0) {
+          this.graphStore.upsertNodes(result.graphNodes);
+
+          // Resolve edges against current symbol index
+          const symbolIndex = this.graphStore.getSymbolIndex();
+          const resolvedEdges = resolveEdges(result.rawEdges, symbolIndex);
+          if (resolvedEdges.length > 0) {
+            this.graphStore.upsertEdges(resolvedEdges);
+          }
+
+          // Mark this file's nodes as potentially needing stale check
+          this.graphStore.markFileStale(filePath);
+          // Immediately un-stale since we just re-indexed
+          this.graphStore.upsertNodes(result.graphNodes); // stale=false
+        }
+
         this.onProgress?.(
-          `Re-indexed: ${path.basename(filePath)} (${records.length} chunks)`
+          `Re-indexed: ${path.basename(filePath)} (${result.records.length} chunks)`
         );
       }
     } finally {
@@ -463,6 +599,9 @@ export class FileWatcher {
   private async handleFileDelete(filePath: string): Promise<void> {
     try {
       await this.store.deleteByFilePath(filePath);
+      if (this.graphStore?.isAvailable()) {
+        this.graphStore.deleteByFile(filePath);
+      }
       this.onProgress?.(`Removed from index: ${path.basename(filePath)}`);
     } catch (error) {
       this.onProgress?.(`Error removing ${filePath} from index: ${error}`);

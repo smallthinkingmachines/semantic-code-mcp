@@ -216,10 +216,18 @@ export class SemanticSearchTool {
   private indexed = false;
   private indexingPromise: Promise<void> | null = null;
   private initPromise: Promise<void> | null = null;
+  private graphStore: import('../graph/index.js').GraphStore | null = null;
 
   constructor(rootDir: string, indexDir?: string) {
     this.rootDir = path.resolve(rootDir);
     this.storeDir = indexDir || path.join(this.rootDir, '.semantic-code', 'index');
+  }
+
+  /**
+   * Set a graph store to be passed to the indexer and watcher.
+   */
+  setGraphStore(graphStore: import('../graph/index.js').GraphStore): void {
+    this.graphStore = graphStore;
   }
 
   /**
@@ -319,6 +327,7 @@ On first use, indexes the codebase (may take a moment for large projects).`,
         rootDir: this.rootDir,
         store: this.store!,
         onProgress,
+        graphStore: this.graphStore ?? undefined,
       });
 
       this.indexed = true;
@@ -435,6 +444,7 @@ On first use, indexes the codebase (may take a moment for large projects).`,
       rootDir: this.rootDir,
       store: this.store!,
       onProgress,
+      graphStore: this.graphStore ?? undefined,
     });
     this.watcher.start();
   }

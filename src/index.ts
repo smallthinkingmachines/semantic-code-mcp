@@ -115,6 +115,9 @@ async function startServer() {
       sessionManager = new SessionManager(graphConfig.sessionTtl);
       sessionManager.startCleanup();
 
+      // Wire graph store into search tool for indexing integration
+      searchTool.setGraphStore(graphStore);
+
       contextQueryTool = new ContextQueryTool(searchTool, graphStore, sessionManager, graphConfig);
       graphAnnotateTool = new GraphAnnotateTool(graphStore, sessionManager);
       sessionSummaryTool = new SessionSummaryTool(graphStore, sessionManager);
