@@ -14,6 +14,12 @@ export interface LanguageConfig {
   docstringNodeTypes: string[];
   /** Path to the WASM grammar file (relative to grammars directory) */
   wasmPath: string;
+  /** Node types for function/method calls (for graph edge extraction) */
+  callNodeTypes?: string[];
+  /** Node types for import statements (for graph edge extraction) */
+  importNodeTypes?: string[];
+  /** Node types for extends/implements clauses (for graph edge extraction) */
+  heritageNodeTypes?: string[];
 }
 
 export const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
@@ -33,6 +39,9 @@ export const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
     nameNodeTypes: ['identifier', 'property_identifier'],
     docstringNodeTypes: ['comment'],
     wasmPath: 'tree-sitter-typescript.wasm',
+    callNodeTypes: ['call_expression', 'new_expression'],
+    importNodeTypes: ['import_statement'],
+    heritageNodeTypes: ['extends_clause', 'implements_clause'],
   },
   tsx: {
     extensions: ['.tsx'],
@@ -50,6 +59,9 @@ export const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
     nameNodeTypes: ['identifier', 'property_identifier'],
     docstringNodeTypes: ['comment'],
     wasmPath: 'tree-sitter-tsx.wasm',
+    callNodeTypes: ['call_expression', 'new_expression'],
+    importNodeTypes: ['import_statement'],
+    heritageNodeTypes: ['extends_clause', 'implements_clause'],
   },
   javascript: {
     extensions: ['.js', '.mjs', '.cjs'],
@@ -64,6 +76,9 @@ export const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
     nameNodeTypes: ['identifier', 'property_identifier'],
     docstringNodeTypes: ['comment'],
     wasmPath: 'tree-sitter-javascript.wasm',
+    callNodeTypes: ['call_expression', 'new_expression'],
+    importNodeTypes: ['import_statement'],
+    heritageNodeTypes: ['extends_clause'],
   },
   jsx: {
     extensions: ['.jsx'],
@@ -78,6 +93,9 @@ export const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
     nameNodeTypes: ['identifier', 'property_identifier'],
     docstringNodeTypes: ['comment'],
     wasmPath: 'tree-sitter-javascript.wasm',
+    callNodeTypes: ['call_expression', 'new_expression'],
+    importNodeTypes: ['import_statement'],
+    heritageNodeTypes: ['extends_clause'],
   },
   python: {
     extensions: ['.py', '.pyw'],
@@ -89,6 +107,9 @@ export const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
     nameNodeTypes: ['identifier'],
     docstringNodeTypes: ['string', 'comment'], // Python uses string literals as docstrings
     wasmPath: 'tree-sitter-python.wasm',
+    callNodeTypes: ['call'],
+    importNodeTypes: ['import_statement', 'import_from_statement'],
+    heritageNodeTypes: ['argument_list'], // class Foo(Base): — base classes in argument_list
   },
   go: {
     extensions: ['.go'],
