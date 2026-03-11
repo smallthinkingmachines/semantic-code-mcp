@@ -190,7 +190,7 @@ function extractDocstring(
  * - `file (copy).ts` → `file__copy__ts`
  * - `c++/main.cpp` → `c___main_cpp`
  */
-function generateChunkId(filePath: string, startLine: number): string {
+export function generateChunkId(filePath: string, startLine: number): string {
   const normalized = filePath
     .replace(/[\\/]/g, '_')         // path separators
     .replace(/\./g, '_')            // dots
@@ -253,6 +253,134 @@ function splitLargeContent(
 }
 
 /**
+ * Build CodeChunk objects from a semantic AST node, splitting if too large.
+ */
+function buildChunksFromNode(
+  node: Parser.SyntaxNode,
+  filePath: string,
+  sourceCode: string,
+  config: LanguageConfig,
+  lang: string,
+): CodeChunk[] {
+  const content = node.text;
+  const startLine = node.startPosition.row + 1; // 1-indexed
+  const endLine = node.endPosition.row + 1;
+  const name = extractName(node, config);
+  const signature = extractSignature(node, sourceCode);
+  const docstring = extractDocstring(node, sourceCode, config);
+
+  if (isTooSmall(content)) return [];
+
+  const outputLang = lang === 'tsx' ? 'typescript' : lang === 'jsx' ? 'javascript' : lang;
+
+  if (isTooLarge(content)) {
+    const subChunks = splitLargeContent(content, startLine);
+    return subChunks
+      .map((sub, i) => sub ? ({
+        id: generateChunkId(filePath, sub.startLine) + `_p${i}`,
+        filePath,
+        content: sub.content,
+        startLine: sub.startLine,
+        endLine: sub.endLine,
+        name: name ? `${name} (part ${i + 1})` : null,
+        nodeType: node.type,
+        signature: i === 0 ? signature : null,
+        docstring: i === 0 ? docstring : null,
+        language: outputLang,
+      }) : null)
+      .filter((c): c is CodeChunk => c !== null);
+  }
+
+  return [{
+    id: generateChunkId(filePath, startLine),
+    filePath,
+    content,
+    startLine,
+    endLine,
+    name,
+    nodeType: node.type,
+    signature,
+    docstring,
+    language: outputLang,
+  }];
+}
+
+/**
+ * Core chunking implementation shared by chunkCode and chunkCodeWithEdges.
+ *
+ * @param sourceCode - Raw source code
+ * @param filePath - File path for language detection and IDs
+ * @param extractEdges - Whether to extract raw edges for the context graph
+ * @returns ChunkResult with chunks and optionally raw edges
+ */
+async function chunkCodeCore(
+  sourceCode: string,
+  filePath: string,
+  extractEdges: boolean,
+): Promise<ChunkResult> {
+  const cleanedSource = stripBOM(sourceCode);
+  const ext = path.extname(filePath);
+  const lang = getLanguageByExtension(ext);
+
+  if (!lang) {
+    log.debug('Unsupported language, using fallback chunking', { filePath, ext });
+    return { chunks: fallbackChunking(cleanedSource, filePath), rawEdges: [] };
+  }
+
+  const config = LANGUAGE_CONFIGS[lang];
+  if (!config) {
+    return { chunks: fallbackChunking(cleanedSource, filePath), rawEdges: [] };
+  }
+
+  let tree: Parser.Tree | null = null;
+
+  try {
+    const parser = await createParser(config.wasmPath);
+    tree = parser.parse(cleanedSource);
+    const chunks: CodeChunk[] = [];
+    const rawEdges: RawEdge[] = [];
+
+    const semanticNodes: Parser.SyntaxNode[] = [];
+    collectSemanticNodes(tree.rootNode, config.chunkNodeTypes, semanticNodes, 0);
+
+    for (const node of semanticNodes) {
+      const nodeChunks = buildChunksFromNode(node, filePath, cleanedSource, config, lang);
+      if (nodeChunks.length === 0) continue;
+
+      chunks.push(...nodeChunks);
+
+      if (extractEdges) {
+        const sourceChunkId = nodeChunks[0]!.id;
+        const edges = extractEdgesFromNode(node, sourceChunkId, filePath, config);
+        rawEdges.push(...edges);
+      }
+    }
+
+    if (chunks.length === 0) {
+      log.debug('No semantic nodes found, using fallback chunking', { filePath });
+      return { chunks: fallbackChunking(cleanedSource, filePath), rawEdges: [] };
+    }
+
+    log.debug('Chunking complete', {
+      filePath,
+      chunkCount: chunks.length,
+      ...(extractEdges ? { edgeCount: rawEdges.length } : {}),
+    });
+    return { chunks, rawEdges };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    log.warn('Tree-sitter parsing failed, using fallback', {
+      filePath,
+      error: errorMessage,
+      errorType: error instanceof Error ? error.constructor.name : 'Unknown',
+    });
+    return { chunks: fallbackChunking(cleanedSource, filePath), rawEdges: [] };
+  } finally {
+    if (tree) tree.delete();
+  }
+}
+
+/**
  * Main chunking function - processes source code into semantic chunks.
  *
  * Parses source code using tree-sitter and extracts semantic units
@@ -275,117 +403,15 @@ export async function chunkCode(
   sourceCode: string,
   filePath: string
 ): Promise<CodeChunk[]> {
-  // Strip BOM if present (common in files from Windows editors)
-  const cleanedSource = stripBOM(sourceCode);
-
-  const ext = path.extname(filePath);
-  const lang = getLanguageByExtension(ext);
-
-  if (!lang) {
-    // Fall back to simple line-based chunking for unsupported languages
-    log.debug('Unsupported language, using fallback chunking', { filePath, ext });
-    return fallbackChunking(cleanedSource, filePath);
-  }
-
-  const config = LANGUAGE_CONFIGS[lang];
-  if (!config) {
-    return fallbackChunking(cleanedSource, filePath);
-  }
-
-  let parser: Parser | null = null;
-  let tree: Parser.Tree | null = null;
-
-  try {
-    // Create parser with the language's WASM grammar
-    parser = await createParser(config.wasmPath);
-    tree = parser.parse(cleanedSource);
-    const chunks: CodeChunk[] = [];
-
-    // Collect all semantic nodes with depth limiting
-    const semanticNodes: Parser.SyntaxNode[] = [];
-    collectSemanticNodes(tree.rootNode, config.chunkNodeTypes, semanticNodes, 0);
-
-    for (const node of semanticNodes) {
-      const content = node.text;
-      const startLine = node.startPosition.row + 1; // 1-indexed
-      const endLine = node.endPosition.row + 1;
-      const name = extractName(node, config);
-      const signature = extractSignature(node, cleanedSource);
-      const docstring = extractDocstring(node, cleanedSource, config);
-
-      // Skip if too small
-      if (isTooSmall(content)) continue;
-
-      // Normalize language name for output (tsx -> typescript)
-      const outputLang = lang === 'tsx' ? 'typescript' : lang === 'jsx' ? 'javascript' : lang;
-
-      // Split if too large
-      if (isTooLarge(content)) {
-        const subChunks = splitLargeContent(content, startLine);
-        for (let i = 0; i < subChunks.length; i++) {
-          const sub = subChunks[i];
-          if (!sub) continue;
-          chunks.push({
-            id: generateChunkId(filePath, sub.startLine) + `_p${i}`,
-            filePath,
-            content: sub.content,
-            startLine: sub.startLine,
-            endLine: sub.endLine,
-            name: name ? `${name} (part ${i + 1})` : null,
-            nodeType: node.type,
-            signature: i === 0 ? signature : null,
-            docstring: i === 0 ? docstring : null,
-            language: outputLang,
-          });
-        }
-      } else {
-        chunks.push({
-          id: generateChunkId(filePath, startLine),
-          filePath,
-          content,
-          startLine,
-          endLine,
-          name,
-          nodeType: node.type,
-          signature,
-          docstring,
-          language: outputLang,
-        });
-      }
-    }
-
-    // If we didn't find any semantic nodes, fall back to simple chunking
-    if (chunks.length === 0) {
-      log.debug('No semantic nodes found, using fallback chunking', { filePath });
-      return fallbackChunking(cleanedSource, filePath);
-    }
-
-    log.debug('Chunking complete', { filePath, chunkCount: chunks.length });
-    return chunks;
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    log.warn('Tree-sitter parsing failed, using fallback', {
-      filePath,
-      error: errorMessage,
-      errorType: error instanceof Error ? error.constructor.name : 'Unknown',
-    });
-    return fallbackChunking(cleanedSource, filePath);
-  } finally {
-    // IMPORTANT: Free WASM memory by deleting the tree
-    if (tree) {
-      tree.delete();
-    }
-    // Note: Parser instances are lightweight and don't need explicit cleanup
-    // as long as the tree is deleted
-  }
+  const result = await chunkCodeCore(sourceCode, filePath, false);
+  return result.chunks;
 }
 
 /**
  * Chunk code and extract raw edges for the context graph.
  *
  * This extends `chunkCode` by additionally extracting structural edges
- * (calls, imports, extends/implements) from the AST. The existing
- * `chunkCode()` is unchanged for backward compatibility.
+ * (calls, imports, extends/implements) from the AST.
  *
  * @param sourceCode - The source code content
  * @param filePath - The file path (for language detection and IDs)
@@ -395,112 +421,7 @@ export async function chunkCodeWithEdges(
   sourceCode: string,
   filePath: string
 ): Promise<ChunkResult> {
-  const cleanedSource = stripBOM(sourceCode);
-  const ext = path.extname(filePath);
-  const lang = getLanguageByExtension(ext);
-
-  if (!lang) {
-    const chunks = await fallbackChunking(cleanedSource, filePath);
-    return { chunks, rawEdges: [] };
-  }
-
-  const config = LANGUAGE_CONFIGS[lang];
-  if (!config) {
-    const chunks = await fallbackChunking(cleanedSource, filePath);
-    return { chunks, rawEdges: [] };
-  }
-
-  let parser: Parser | null = null;
-  let tree: Parser.Tree | null = null;
-
-  try {
-    parser = await createParser(config.wasmPath);
-    tree = parser.parse(cleanedSource);
-    const chunks: CodeChunk[] = [];
-    const rawEdges: RawEdge[] = [];
-
-    // Collect all semantic nodes
-    const semanticNodes: Parser.SyntaxNode[] = [];
-    collectSemanticNodes(tree.rootNode, config.chunkNodeTypes, semanticNodes, 0);
-
-    for (const node of semanticNodes) {
-      const content = node.text;
-      const startLine = node.startPosition.row + 1;
-      const endLine = node.endPosition.row + 1;
-      const name = extractName(node, config);
-      const signature = extractSignature(node, cleanedSource);
-      const docstring = extractDocstring(node, cleanedSource, config);
-
-      if (isTooSmall(content)) continue;
-
-      const outputLang = lang === 'tsx' ? 'typescript' : lang === 'jsx' ? 'javascript' : lang;
-
-      // Build chunk(s) for this node
-      const nodeChunks: CodeChunk[] = [];
-      if (isTooLarge(content)) {
-        const subChunks = splitLargeContent(content, startLine);
-        for (let i = 0; i < subChunks.length; i++) {
-          const sub = subChunks[i];
-          if (!sub) continue;
-          nodeChunks.push({
-            id: generateChunkId(filePath, sub.startLine) + `_p${i}`,
-            filePath,
-            content: sub.content,
-            startLine: sub.startLine,
-            endLine: sub.endLine,
-            name: name ? `${name} (part ${i + 1})` : null,
-            nodeType: node.type,
-            signature: i === 0 ? signature : null,
-            docstring: i === 0 ? docstring : null,
-            language: outputLang,
-          });
-        }
-      } else {
-        nodeChunks.push({
-          id: generateChunkId(filePath, startLine),
-          filePath,
-          content,
-          startLine,
-          endLine,
-          name,
-          nodeType: node.type,
-          signature,
-          docstring,
-          language: outputLang,
-        });
-      }
-
-      chunks.push(...nodeChunks);
-
-      // Extract edges from this semantic node's children
-      // Use the first chunk's ID as the source
-      const sourceChunkId = nodeChunks[0]?.id;
-      if (sourceChunkId) {
-        const edges = extractEdgesFromNode(node, sourceChunkId, filePath, config);
-        rawEdges.push(...edges);
-      }
-    }
-
-    if (chunks.length === 0) {
-      return { chunks: fallbackChunking(cleanedSource, filePath), rawEdges: [] };
-    }
-
-    log.debug('Chunking with edges complete', {
-      filePath,
-      chunkCount: chunks.length,
-      edgeCount: rawEdges.length,
-    });
-    return { chunks, rawEdges };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    log.warn('Tree-sitter parsing failed for edge extraction, using fallback', {
-      filePath,
-      error: errorMessage,
-    });
-    return { chunks: fallbackChunking(cleanedSource, filePath), rawEdges: [] };
-  } finally {
-    if (tree) tree.delete();
-  }
+  return chunkCodeCore(sourceCode, filePath, true);
 }
 
 /**

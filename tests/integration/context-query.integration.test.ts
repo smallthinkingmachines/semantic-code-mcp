@@ -1,16 +1,15 @@
 /**
- * Integration test: end-to-end context_query with search + graph expansion.
+ * Integration test: GraphStore + SessionManager working together.
  *
- * Note: This test requires tree-sitter and embedding models to be available.
- * It will be skipped in environments where these are not set up.
+ * Tests graph traversal, session tracking, and stale node detection
+ * using the real GraphStore (in-memory SQLite) and SessionManager.
  */
 
 import { GraphStore } from '../../src/graph/index.js';
 import { SessionManager } from '../../src/graph/session.js';
-import type { GraphConfig } from '../../src/graph/config.js';
 import type { GraphNode, GraphEdge } from '../../src/graph/types.js';
 
-describe('Context Query Integration', () => {
+describe('Graph + Session Integration', () => {
   let graphStore: GraphStore;
   let sessionManager: SessionManager;
 

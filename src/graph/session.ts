@@ -129,14 +129,15 @@ export class SessionManager {
   visitNode(sessionId: string, nodeId: string): void {
     const session = this.getSession(sessionId);
 
+    // Always remove from frontier when visiting, even if cap is reached
+    session.frontier.delete(nodeId);
+
     if (session.visitedNodes.size >= MAX_VISITED_NODES) {
       log.warn('Session visited nodes cap reached', { sessionId, cap: MAX_VISITED_NODES });
       return;
     }
 
     session.visitedNodes.add(nodeId);
-    // Remove from frontier once visited
-    session.frontier.delete(nodeId);
   }
 
   /**

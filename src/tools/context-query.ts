@@ -14,6 +14,7 @@ import type { SessionManager } from '../graph/session.js';
 import type { GraphConfig } from '../graph/config.js';
 import type { GraphNeighbor, EdgeType } from '../graph/types.js';
 import type { SemanticSearchTool, SemanticSearchOutput } from './semantic-search.js';
+import { generateChunkId } from '../chunker/index.js';
 
 /**
  * Zod input schema for context_query tool.
@@ -28,7 +29,7 @@ export const ContextQueryInputSchema = z.object({
     .array(z.enum(['calls', 'imports', 'extends', 'implements', 'exports', 'agent_linked']))
     .optional()
     .describe('Edge types to follow (default: all)'),
-  session_id: z.string().optional().describe('Session ID for tracking visited nodes and frontier'),
+  session_id: z.string().regex(/^[a-zA-Z0-9_-]+$/, 'Session ID contains invalid characters').optional().describe('Session ID for tracking visited nodes and frontier'),
 });
 
 export type ContextQueryInput = z.infer<typeof ContextQueryInputSchema>;
@@ -117,7 +118,7 @@ export class ContextQueryTool {
     // Build enriched results
     const results = searchResult.results.map((r) => {
       // Generate the chunk ID to look up in graph
-      const chunkId = this.filePathToChunkId(r.file, r.startLine);
+      const chunkId = generateChunkId(r.file, r.startLine);
       let neighbors: ContextQueryOutput['results'][0]['neighbors'] = [];
 
       if (this.graphStore?.isAvailable() && chunkId) {
@@ -229,18 +230,6 @@ export class ContextQueryTool {
     }
 
     return formatted;
-  }
-
-  /**
-   * Convert file path + line to chunk ID format.
-   * Mirrors generateChunkId from chunker/index.ts.
-   */
-  private filePathToChunkId(filePath: string, startLine: number): string {
-    const normalized = filePath
-      .replace(/[\\/]/g, '_')
-      .replace(/\./g, '_')
-      .replace(/[^a-zA-Z0-9_-]/g, '_');
-    return `${normalized}_L${startLine}`;
   }
 
   /**

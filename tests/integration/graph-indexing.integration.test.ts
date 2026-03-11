@@ -42,13 +42,20 @@ class DataProcessor {
   });
 
   it('should resolve edges within the same file', async () => {
+    // Functions must be large enough to pass isTooSmall filter (>50 chars, >2 lines)
     const code = `
-function helper(): void {
-  console.log('helping');
+function helper(input: string): string {
+  const trimmed = input.trim();
+  const upper = trimmed.toUpperCase();
+  const result = upper.replace(/\\s+/g, '-');
+  return result;
 }
 
-function main(): void {
-  helper();
+function main(data: string): string {
+  const processed = helper(data);
+  const validated = processed.length > 0 ? processed : 'empty';
+  console.log('Result:', validated);
+  return validated;
 }
 `;
 
@@ -68,10 +75,15 @@ function main(): void {
 
     const resolved = resolveEdges(result.rawEdges, symbolIndex);
 
-    // Should have resolved some edges (e.g., main calls helper)
+    // Should have resolved the helper() call from main
     const callEdges = resolved.filter((e) => e.edgeType === 'calls');
-    // At least the helper() call should resolve
-    expect(callEdges.length).toBeGreaterThanOrEqual(0); // May be 0 if chunks don't overlap
+    expect(callEdges.length).toBeGreaterThan(0);
+    // Verify the main -> helper edge exists
+    const helperCall = callEdges.find(
+      (e) => e.edgeType === 'calls' && e.metadata?.includes('helper')
+        || symbolIndex.get('helper')?.some((s) => s.id === e.targetId)
+    );
+    expect(helperCall).toBeDefined();
   });
 
   it('should store graph data in SQLite', async () => {
@@ -140,8 +152,8 @@ class FileProcessor:
     const result = await chunkCodeWithEdges(code, '/test/processor.py');
 
     expect(result.chunks.length).toBeGreaterThan(0);
-    // Python edge extraction
-    expect(result.rawEdges.length).toBeGreaterThanOrEqual(0);
+    // Python edge extraction — should find calls and/or imports
+    expect(result.rawEdges.length).toBeGreaterThan(0);
   });
 
   it('should return empty edges for unsupported languages', async () => {

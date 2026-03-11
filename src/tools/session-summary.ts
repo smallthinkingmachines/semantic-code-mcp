@@ -15,7 +15,7 @@ import type { SessionManager, SessionSummary } from '../graph/session.js';
  * Zod input schema for session_summary tool.
  */
 export const SessionSummaryInputSchema = z.object({
-  session_id: z.string().min(1).describe('Session ID to summarize'),
+  session_id: z.string().min(1).regex(/^[a-zA-Z0-9_-]+$/, 'Session ID contains invalid characters').describe('Session ID to summarize'),
 });
 
 export type SessionSummaryInput = z.infer<typeof SessionSummaryInputSchema>;

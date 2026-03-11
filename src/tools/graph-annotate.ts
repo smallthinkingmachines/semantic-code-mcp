@@ -16,11 +16,11 @@ import type { GraphEdge } from '../graph/types.js';
  * Zod input schema for graph_annotate tool.
  */
 export const GraphAnnotateInputSchema = z.object({
-  session_id: z.string().min(1).describe('Session ID for the annotation'),
-  node_id: z.string().min(1).describe('Chunk ID to annotate'),
+  session_id: z.string().min(1).regex(/^[a-zA-Z0-9_-]+$/, 'Session ID contains invalid characters').describe('Session ID for the annotation'),
+  node_id: z.string().min(1).regex(/^[a-zA-Z0-9_-]+$/, 'Node ID contains invalid characters').describe('Chunk ID to annotate'),
   note: z.string().optional().describe('Note to attach to the node'),
   link_to: z
-    .array(z.string())
+    .array(z.string().regex(/^[a-zA-Z0-9_-]+$/, 'Link target ID contains invalid characters'))
     .optional()
     .describe('Array of chunk IDs to create agent_linked edges to'),
   reasoning: z.string().optional().describe('Reasoning log entry about why this annotation matters'),

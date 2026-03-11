@@ -10,6 +10,7 @@
 import Database from 'better-sqlite3';
 import { GRAPH_SCHEMA } from './schema.js';
 import { GraphError } from '../errors.js';
+import { validateId, validateIds } from '../utils/validation.js';
 import { createLogger } from '../utils/logger.js';
 import type { GraphNode, GraphEdge, GraphNeighbor, EdgeType, NodeKind } from './types.js';
 
@@ -36,7 +37,6 @@ export class GraphStore {
     getStaleNodes?: Database.Statement;
     markStale?: Database.Statement;
     getSymbolIndex?: Database.Statement;
-    getAllNodes?: Database.Statement;
     getNodesByFile?: Database.Statement;
     getMeta?: Database.Statement;
     setMeta?: Database.Statement;
@@ -151,10 +151,6 @@ export class GraphStore {
       `SELECT id, symbol_name, file_path FROM graph_nodes WHERE symbol_name IS NOT NULL`
     );
 
-    this.stmts.getAllNodes = this.db.prepare(
-      `SELECT * FROM graph_nodes`
-    );
-
     this.stmts.getNodesByFile = this.db.prepare(
       `SELECT * FROM graph_nodes WHERE file_path = ?`
     );
@@ -192,6 +188,7 @@ export class GraphStore {
   upsertNodes(nodes: GraphNode[]): void {
     this.ensureAvailable();
     if (nodes.length === 0) return;
+    validateIds(nodes.map((n) => n.id));
 
     const upsertMany = this.db!.transaction((items: GraphNode[]) => {
       for (const node of items) {
@@ -217,6 +214,10 @@ export class GraphStore {
   upsertEdges(edges: GraphEdge[]): void {
     this.ensureAvailable();
     if (edges.length === 0) return;
+    for (const edge of edges) {
+      validateId(edge.sourceId);
+      validateId(edge.targetId);
+    }
 
     const upsertMany = this.db!.transaction((items: GraphEdge[]) => {
       for (const edge of items) {
@@ -255,6 +256,7 @@ export class GraphStore {
    */
   getNode(id: string): GraphNode | undefined {
     this.ensureAvailable();
+    validateId(id);
     const row = this.stmts.getNode!.get(id) as Record<string, unknown> | undefined;
     return row ? this.rowToNode(row) : undefined;
   }
@@ -282,6 +284,7 @@ export class GraphStore {
     edgeKinds?: EdgeType[]
   ): GraphNeighbor[] {
     this.ensureAvailable();
+    validateId(startId);
 
     const depth = Math.min(Math.max(maxDepth, 1), 5);
     const visited = new Set<string>([startId]);
