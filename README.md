@@ -26,6 +26,8 @@ Using local embeddings and vector search, it bridges the gap between text search
 ## Features
 
 - **Semantic search** - Find code by meaning, not just keywords
+- **Context graph** - Understand how code connects (calls, imports, inheritance) with graph-enhanced search
+- **Session memory** - Track agent exploration state across multi-turn conversations
 - **AST-aware chunking** - Tree-sitter WASM for cross-platform parsing, no native compilation required
 - **Local embeddings** - ONNX Runtime with nomic-embed-code (768 dims, 8K context)
 - **Hybrid search** - Vector similarity + BM25 keyword matching
@@ -127,13 +129,79 @@ semantic_search({
 ## Architecture
 
 ```
-semantic_search tool (MCP Server)
+MCP Server
 ├── Chunker (web-tree-sitter) → AST-aware code splitting (WASM, cross-platform)
 ├── Embedder (ONNX local)     → nomic-embed-code, 768 dims
 ├── Vector DB (LanceDB)       → Serverless, hybrid search
+├── Context Graph (SQLite)    → Structural relationships + session memory
 ├── File Watcher (chokidar)   → Incremental updates
 └── Hybrid Search             → BM25 + vector + reranking
 ```
+
+## Context Graph (Opt-in)
+
+The context graph adds structural awareness on top of semantic search. Enable it with:
+
+```bash
+SEMANTIC_CODE_GRAPH_ENABLED=true
+```
+
+When enabled, the server extracts structural relationships (calls, imports, extends, implements) from the AST during indexing and stores them in a SQLite graph. This powers three additional tools.
+
+### Tool: context_query
+
+Semantic search + graph neighborhood expansion. Returns search results enriched with structural context.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | Yes | Natural language query |
+| `path` | string | No | Directory to scope the search |
+| `limit` | number | No | Maximum results (default: 10) |
+| `file_pattern` | string | No | Glob pattern to filter files |
+| `depth` | number | No | Graph traversal depth (1-3, default: 1) |
+| `edge_kinds` | string[] | No | Edge types to follow: calls, imports, extends, implements, exports, agent_linked |
+| `session_id` | string | No | Session ID for exploration tracking |
+
+```
+context_query({
+  query: "payment processing",
+  depth: 2,
+  session_id: "debug-checkout"
+})
+```
+
+Returns each search result plus its graph neighbors — callers, callees, imports, and inheritance — without reading additional files.
+
+### Tool: graph_annotate
+
+Leave notes on code nodes and create links between related chunks.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | Yes | Session ID |
+| `node_id` | string | Yes | Chunk ID to annotate |
+| `note` | string | No | Note to attach |
+| `link_to` | string[] | No | Chunk IDs to create agent_linked edges to |
+| `reasoning` | string | No | Reasoning log entry |
+
+### Tool: session_summary
+
+View exploration state: visited nodes, frontier, annotations, reasoning log, and graph stats.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | Yes | Session ID to summarize |
+
+### Graph Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SEMANTIC_CODE_GRAPH_ENABLED` | Enable the context graph | `false` |
+| `SEMANTIC_CODE_GRAPH_DEPTH` | Default BFS traversal depth (1-5) | `2` |
+| `SEMANTIC_CODE_SESSION_TTL` | Session TTL in seconds | `3600` |
+| `SEMANTIC_CODE_EDGE_KINDS` | Comma-separated edge types to follow | all types |
+
+The graph degrades gracefully — if SQLite initialization fails, semantic search continues to work without graph features.
 
 ## Supported Languages
 
@@ -155,6 +223,10 @@ Other languages fall back to line-based chunking.
 |----------|-------------|---------|
 | `SEMANTIC_CODE_ROOT` | Root directory to index | Current working directory |
 | `SEMANTIC_CODE_INDEX` | Custom index storage location | `.semantic-code/index/` |
+| `SEMANTIC_CODE_GRAPH_ENABLED` | Enable context graph | `false` |
+| `SEMANTIC_CODE_GRAPH_DEPTH` | Default graph traversal depth (1-5) | `2` |
+| `SEMANTIC_CODE_SESSION_TTL` | Session TTL in seconds | `3600` |
+| `SEMANTIC_CODE_EDGE_KINDS` | Edge types to follow (comma-separated) | all types |
 
 ### Default Ignore Patterns
 
@@ -194,6 +266,7 @@ Invalid inputs throw typed errors (`InvalidFilterError`, `PathTraversalError`, `
 ## Storage
 
 - Index location: `.semantic-code/index/` (add to `.gitignore`)
+- Graph database: `.semantic-code/index/graph.db` (SQLite, created when graph is enabled)
 - Model cache: `~/.cache/semantic-code-mcp/`
 - Estimated size: 3GB codebase → ~1.5GB index (with float16)
 
@@ -231,12 +304,19 @@ semantic-code-mcp/
 ├── src/
 │   ├── index.ts              # MCP server entry point
 │   ├── chunker/
-│   │   ├── index.ts          # Main chunker logic
+│   │   ├── index.ts          # AST-aware chunker + edge extraction
 │   │   ├── languages.ts      # Language configs with WASM paths
 │   │   └── wasm-loader.ts    # WASM grammar loader with caching
 │   ├── embedder/
 │   │   ├── index.ts          # ONNX embedding generation
 │   │   └── model.ts          # Model download & loading
+│   ├── graph/
+│   │   ├── index.ts          # SQLite graph store (nodes, edges, BFS)
+│   │   ├── config.ts         # Graph configuration from env vars
+│   │   ├── extractor.ts      # Edge resolution (raw edges → graph edges)
+│   │   ├── schema.ts         # SQLite DDL for graph tables
+│   │   ├── session.ts        # In-memory session manager
+│   │   └── types.ts          # GraphNode, GraphEdge, RawEdge types
 │   ├── store/
 │   │   └── index.ts          # LanceDB integration
 │   ├── search/
@@ -244,8 +324,15 @@ semantic-code-mcp/
 │   │   └── reranker.ts       # Cross-encoder reranking
 │   ├── watcher/
 │   │   └── index.ts          # File watcher + incremental indexing
-│   └── tools/
-│       └── semantic-search.ts # MCP tool definition
+│   ├── tools/
+│   │   ├── semantic-search.ts # semantic_search tool
+│   │   ├── context-query.ts   # context_query tool (search + graph)
+│   │   ├── graph-annotate.ts  # graph_annotate tool
+│   │   └── session-summary.ts # session_summary tool
+│   └── utils/
+│       ├── logger.ts          # Structured logging
+│       ├── validation.ts      # Shared ID validation
+│       └── ...
 ├── grammars/                  # Pre-built WASM parsers
 ├── scripts/
 │   └── copy-grammars.js      # Build script for WASM files
