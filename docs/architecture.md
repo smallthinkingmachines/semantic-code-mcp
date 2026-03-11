@@ -56,7 +56,18 @@ This document describes the internal architecture of semantic-code-mcp.
               │                       │
               │ - Tree-sitter parsing │
               │ - Semantic splitting  │
+              │ - Edge extraction     │
               │ - Fallback chunking   │
+              └───────────────────────┘
+
+              ┌───────────────────────┐
+              │    Context Graph      │
+              │     (graph/)          │
+              │                       │
+              │ - SQLite graph store  │
+              │ - BFS traversal       │
+              │ - Session memory      │
+              │ - Edge resolution     │
               └───────────────────────┘
 ```
 
@@ -66,9 +77,10 @@ This document describes the internal architecture of semantic-code-mcp.
 
 The entry point that implements the Model Context Protocol:
 
-- Registers the `semantic_search` tool
+- Registers `semantic_search`, `context_query`, `graph_annotate`, and `session_summary` tools
 - Handles JSON-RPC communication over stdio
 - Manages server lifecycle
+- Conditionally initializes the context graph when `SEMANTIC_CODE_GRAPH_ENABLED=true`
 
 ### 2. SemanticSearchTool (`src/tools/semantic-search.ts`)
 
@@ -184,6 +196,37 @@ File Change → Debounce (1s) → Read Content → Check Hash → Chunk → Embe
 - MD5 hashing for change detection
 - Debouncing to avoid excessive re-indexing
 - Graceful shutdown with pending operation tracking
+
+### 8. Context Graph (`src/graph/`)
+
+Opt-in structural awareness layer using SQLite (better-sqlite3):
+
+**Components:**
+- **GraphStore** (`index.ts`): SQLite-backed store for nodes and edges with BFS traversal
+- **Extractor** (`extractor.ts`): Resolves raw edges (symbol names) to concrete graph edges (chunk IDs)
+- **SessionManager** (`session.ts`): In-memory session state with TTL-based cleanup
+- **Config** (`config.ts`): Environment variable parsing for graph settings
+
+**Edge Types:**
+- `calls` — function/method call relationships
+- `imports` — import/require dependencies
+- `extends` — class inheritance
+- `implements` — interface implementation
+- `exports` — module exports
+- `agent_linked` — agent-created links via `graph_annotate`
+
+**Schema (SQLite):**
+```
+graph_nodes: id, file_path, symbol_name, kind, start_line, end_line, updated_at, stale
+graph_edges: source_id, target_id, edge_type, weight, metadata
+graph_meta:  key, value
+```
+
+**Design Decisions:**
+- SQLite for graph traversal (BFS < 1ms), separate from LanceDB for vectors
+- In-memory sessions (ephemeral by design, tied to agent tasks not codebase)
+- Graceful degradation: graph failure never breaks semantic search
+- ID validation via shared `utils/validation.ts` for defense-in-depth
 
 ## Data Flow
 

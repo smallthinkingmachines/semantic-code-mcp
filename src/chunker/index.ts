@@ -26,6 +26,7 @@ import {
 import { createParser } from './wasm-loader.js';
 import { stripBOM } from '../utils/paths.js';
 import { createLogger } from '../utils/logger.js';
+import type { RawEdge, ChunkResult } from '../graph/types.js';
 
 const log = createLogger('chunker');
 
@@ -189,7 +190,7 @@ function extractDocstring(
  * - `file (copy).ts` → `file__copy__ts`
  * - `c++/main.cpp` → `c___main_cpp`
  */
-function generateChunkId(filePath: string, startLine: number): string {
+export function generateChunkId(filePath: string, startLine: number): string {
   const normalized = filePath
     .replace(/[\\/]/g, '_')         // path separators
     .replace(/\./g, '_')            // dots
@@ -252,6 +253,134 @@ function splitLargeContent(
 }
 
 /**
+ * Build CodeChunk objects from a semantic AST node, splitting if too large.
+ */
+function buildChunksFromNode(
+  node: Parser.SyntaxNode,
+  filePath: string,
+  sourceCode: string,
+  config: LanguageConfig,
+  lang: string,
+): CodeChunk[] {
+  const content = node.text;
+  const startLine = node.startPosition.row + 1; // 1-indexed
+  const endLine = node.endPosition.row + 1;
+  const name = extractName(node, config);
+  const signature = extractSignature(node, sourceCode);
+  const docstring = extractDocstring(node, sourceCode, config);
+
+  if (isTooSmall(content)) return [];
+
+  const outputLang = lang === 'tsx' ? 'typescript' : lang === 'jsx' ? 'javascript' : lang;
+
+  if (isTooLarge(content)) {
+    const subChunks = splitLargeContent(content, startLine);
+    return subChunks
+      .map((sub, i) => sub ? ({
+        id: generateChunkId(filePath, sub.startLine) + `_p${i}`,
+        filePath,
+        content: sub.content,
+        startLine: sub.startLine,
+        endLine: sub.endLine,
+        name: name ? `${name} (part ${i + 1})` : null,
+        nodeType: node.type,
+        signature: i === 0 ? signature : null,
+        docstring: i === 0 ? docstring : null,
+        language: outputLang,
+      }) : null)
+      .filter((c): c is CodeChunk => c !== null);
+  }
+
+  return [{
+    id: generateChunkId(filePath, startLine),
+    filePath,
+    content,
+    startLine,
+    endLine,
+    name,
+    nodeType: node.type,
+    signature,
+    docstring,
+    language: outputLang,
+  }];
+}
+
+/**
+ * Core chunking implementation shared by chunkCode and chunkCodeWithEdges.
+ *
+ * @param sourceCode - Raw source code
+ * @param filePath - File path for language detection and IDs
+ * @param extractEdges - Whether to extract raw edges for the context graph
+ * @returns ChunkResult with chunks and optionally raw edges
+ */
+async function chunkCodeCore(
+  sourceCode: string,
+  filePath: string,
+  extractEdges: boolean,
+): Promise<ChunkResult> {
+  const cleanedSource = stripBOM(sourceCode);
+  const ext = path.extname(filePath);
+  const lang = getLanguageByExtension(ext);
+
+  if (!lang) {
+    log.debug('Unsupported language, using fallback chunking', { filePath, ext });
+    return { chunks: fallbackChunking(cleanedSource, filePath), rawEdges: [] };
+  }
+
+  const config = LANGUAGE_CONFIGS[lang];
+  if (!config) {
+    return { chunks: fallbackChunking(cleanedSource, filePath), rawEdges: [] };
+  }
+
+  let tree: Parser.Tree | null = null;
+
+  try {
+    const parser = await createParser(config.wasmPath);
+    tree = parser.parse(cleanedSource);
+    const chunks: CodeChunk[] = [];
+    const rawEdges: RawEdge[] = [];
+
+    const semanticNodes: Parser.SyntaxNode[] = [];
+    collectSemanticNodes(tree.rootNode, config.chunkNodeTypes, semanticNodes, 0);
+
+    for (const node of semanticNodes) {
+      const nodeChunks = buildChunksFromNode(node, filePath, cleanedSource, config, lang);
+      if (nodeChunks.length === 0) continue;
+
+      chunks.push(...nodeChunks);
+
+      if (extractEdges) {
+        const sourceChunkId = nodeChunks[0]!.id;
+        const edges = extractEdgesFromNode(node, sourceChunkId, filePath, config);
+        rawEdges.push(...edges);
+      }
+    }
+
+    if (chunks.length === 0) {
+      log.debug('No semantic nodes found, using fallback chunking', { filePath });
+      return { chunks: fallbackChunking(cleanedSource, filePath), rawEdges: [] };
+    }
+
+    log.debug('Chunking complete', {
+      filePath,
+      chunkCount: chunks.length,
+      ...(extractEdges ? { edgeCount: rawEdges.length } : {}),
+    });
+    return { chunks, rawEdges };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    log.warn('Tree-sitter parsing failed, using fallback', {
+      filePath,
+      error: errorMessage,
+      errorType: error instanceof Error ? error.constructor.name : 'Unknown',
+    });
+    return { chunks: fallbackChunking(cleanedSource, filePath), rawEdges: [] };
+  } finally {
+    if (tree) tree.delete();
+  }
+}
+
+/**
  * Main chunking function - processes source code into semantic chunks.
  *
  * Parses source code using tree-sitter and extracts semantic units
@@ -274,109 +403,261 @@ export async function chunkCode(
   sourceCode: string,
   filePath: string
 ): Promise<CodeChunk[]> {
-  // Strip BOM if present (common in files from Windows editors)
-  const cleanedSource = stripBOM(sourceCode);
+  const result = await chunkCodeCore(sourceCode, filePath, false);
+  return result.chunks;
+}
 
-  const ext = path.extname(filePath);
-  const lang = getLanguageByExtension(ext);
+/**
+ * Chunk code and extract raw edges for the context graph.
+ *
+ * This extends `chunkCode` by additionally extracting structural edges
+ * (calls, imports, extends/implements) from the AST.
+ *
+ * @param sourceCode - The source code content
+ * @param filePath - The file path (for language detection and IDs)
+ * @returns ChunkResult with chunks and raw edges
+ */
+export async function chunkCodeWithEdges(
+  sourceCode: string,
+  filePath: string
+): Promise<ChunkResult> {
+  return chunkCodeCore(sourceCode, filePath, true);
+}
 
-  if (!lang) {
-    // Fall back to simple line-based chunking for unsupported languages
-    log.debug('Unsupported language, using fallback chunking', { filePath, ext });
-    return fallbackChunking(cleanedSource, filePath);
-  }
+/**
+ * Extract raw edges from a semantic AST node by traversing its children.
+ *
+ * Looks for call expressions, import statements, and heritage clauses
+ * based on the language config.
+ */
+function extractEdgesFromNode(
+  node: Parser.SyntaxNode,
+  sourceChunkId: string,
+  sourceFilePath: string,
+  config: LanguageConfig
+): RawEdge[] {
+  const edges: RawEdge[] = [];
 
-  const config = LANGUAGE_CONFIGS[lang];
-  if (!config) {
-    return fallbackChunking(cleanedSource, filePath);
-  }
+  const walk = (current: Parser.SyntaxNode, depth: number) => {
+    if (depth > 50) return; // Prevent deep recursion
 
-  let parser: Parser | null = null;
-  let tree: Parser.Tree | null = null;
-
-  try {
-    // Create parser with the language's WASM grammar
-    parser = await createParser(config.wasmPath);
-    tree = parser.parse(cleanedSource);
-    const chunks: CodeChunk[] = [];
-
-    // Collect all semantic nodes with depth limiting
-    const semanticNodes: Parser.SyntaxNode[] = [];
-    collectSemanticNodes(tree.rootNode, config.chunkNodeTypes, semanticNodes, 0);
-
-    for (const node of semanticNodes) {
-      const content = node.text;
-      const startLine = node.startPosition.row + 1; // 1-indexed
-      const endLine = node.endPosition.row + 1;
-      const name = extractName(node, config);
-      const signature = extractSignature(node, cleanedSource);
-      const docstring = extractDocstring(node, cleanedSource, config);
-
-      // Skip if too small
-      if (isTooSmall(content)) continue;
-
-      // Normalize language name for output (tsx -> typescript)
-      const outputLang = lang === 'tsx' ? 'typescript' : lang === 'jsx' ? 'javascript' : lang;
-
-      // Split if too large
-      if (isTooLarge(content)) {
-        const subChunks = splitLargeContent(content, startLine);
-        for (let i = 0; i < subChunks.length; i++) {
-          const sub = subChunks[i];
-          if (!sub) continue;
-          chunks.push({
-            id: generateChunkId(filePath, sub.startLine) + `_p${i}`,
-            filePath,
-            content: sub.content,
-            startLine: sub.startLine,
-            endLine: sub.endLine,
-            name: name ? `${name} (part ${i + 1})` : null,
-            nodeType: node.type,
-            signature: i === 0 ? signature : null,
-            docstring: i === 0 ? docstring : null,
-            language: outputLang,
-          });
-        }
-      } else {
-        chunks.push({
-          id: generateChunkId(filePath, startLine),
-          filePath,
-          content,
-          startLine,
-          endLine,
-          name,
-          nodeType: node.type,
-          signature,
-          docstring,
-          language: outputLang,
+    // Call expressions → 'calls' edges
+    if (config.callNodeTypes?.includes(current.type)) {
+      const calleeName = extractCalleeName(current);
+      if (calleeName) {
+        edges.push({
+          sourceChunkId,
+          sourceFilePath,
+          targetSymbol: calleeName,
+          edgeType: 'calls',
         });
       }
     }
 
-    // If we didn't find any semantic nodes, fall back to simple chunking
-    if (chunks.length === 0) {
-      log.debug('No semantic nodes found, using fallback chunking', { filePath });
-      return fallbackChunking(cleanedSource, filePath);
+    // Import statements → 'imports' edges
+    if (config.importNodeTypes?.includes(current.type)) {
+      const imports = extractImportNames(current);
+      for (const imp of imports) {
+        edges.push({
+          sourceChunkId,
+          sourceFilePath,
+          targetSymbol: imp.name,
+          edgeType: 'imports',
+          modulePath: imp.modulePath,
+        });
+      }
     }
 
-    log.debug('Chunking complete', { filePath, chunkCount: chunks.length });
-    return chunks;
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    log.warn('Tree-sitter parsing failed, using fallback', {
-      filePath,
-      error: errorMessage,
-      errorType: error instanceof Error ? error.constructor.name : 'Unknown',
-    });
-    return fallbackChunking(cleanedSource, filePath);
-  } finally {
-    // IMPORTANT: Free WASM memory by deleting the tree
-    if (tree) {
-      tree.delete();
+    // Heritage clauses → 'extends'/'implements' edges
+    if (config.heritageNodeTypes?.includes(current.type)) {
+      const parents = extractHeritageNames(current);
+      for (const parent of parents) {
+        edges.push({
+          sourceChunkId,
+          sourceFilePath,
+          targetSymbol: parent.name,
+          edgeType: parent.edgeType,
+        });
+      }
     }
-    // Note: Parser instances are lightweight and don't need explicit cleanup
-    // as long as the tree is deleted
+
+    // Export statements → 'exports' edges
+    if (current.type === 'export_statement') {
+      const exportedName = extractExportName(current);
+      if (exportedName) {
+        edges.push({
+          sourceChunkId,
+          sourceFilePath,
+          targetSymbol: exportedName,
+          edgeType: 'exports',
+        });
+      }
+    }
+
+    for (const child of current.children) {
+      walk(child, depth + 1);
+    }
+  };
+
+  walk(node, 0);
+  return edges;
+}
+
+/**
+ * Extract the function/method name from a call expression.
+ */
+function extractCalleeName(node: Parser.SyntaxNode): string | null {
+  // call_expression: first child is the callee
+  const callee = node.children[0];
+  if (!callee) return null;
+
+  // Simple identifier call: foo()
+  if (callee.type === 'identifier') {
+    return callee.text;
   }
+
+  // Member expression: obj.method()
+  if (callee.type === 'member_expression' || callee.type === 'attribute') {
+    // Get the last identifier (the method name)
+    const prop = callee.children.find(
+      (c) => c.type === 'property_identifier' || c.type === 'identifier'
+    );
+    // For member expressions, use the property name
+    if (callee.type === 'member_expression') {
+      const propId = callee.childForFieldName('property');
+      if (propId) return propId.text;
+    }
+    return prop?.text || null;
+  }
+
+  return null;
+}
+
+/**
+ * Extract imported symbol names from an import statement.
+ */
+function extractImportNames(
+  node: Parser.SyntaxNode
+): Array<{ name: string; modulePath?: string }> {
+  const results: Array<{ name: string; modulePath?: string }> = [];
+
+  // Find the module path (string literal)
+  let modulePath: string | undefined;
+  const sourceNode = node.childForFieldName('source') ||
+    node.children.find((c) => c.type === 'string' || c.type === 'dotted_name');
+  if (sourceNode) {
+    // Remove quotes from string
+    modulePath = sourceNode.text.replace(/['"]/g, '');
+  }
+
+  // Find named imports
+  const importClause = node.children.find(
+    (c) => c.type === 'import_clause' || c.type === 'named_imports'
+  );
+
+  if (importClause) {
+    // Look for named_imports: { Foo, Bar }
+    const named = importClause.type === 'named_imports'
+      ? importClause
+      : importClause.children.find((c) => c.type === 'named_imports');
+
+    if (named) {
+      for (const spec of named.children) {
+        if (spec.type === 'import_specifier') {
+          const nameNode = spec.childForFieldName('name') ||
+            spec.children.find((c) => c.type === 'identifier');
+          if (nameNode) {
+            results.push({ name: nameNode.text, modulePath });
+          }
+        }
+      }
+    }
+
+    // Default import
+    const defaultImport = importClause.children.find((c) => c.type === 'identifier');
+    if (defaultImport) {
+      results.push({ name: defaultImport.text, modulePath });
+    }
+  }
+
+  // Python: import X or from X import Y
+  if (node.type === 'import_statement') {
+    for (const child of node.children) {
+      if (child.type === 'dotted_name') {
+        // Get the last segment
+        const parts = child.text.split('.');
+        const last = parts[parts.length - 1];
+        if (last) results.push({ name: last, modulePath: child.text });
+      }
+    }
+  }
+
+  if (node.type === 'import_from_statement') {
+    for (const child of node.children) {
+      if (child.type === 'identifier' && child.previousSibling?.text === 'import') {
+        results.push({ name: child.text, modulePath });
+      }
+    }
+  }
+
+  // If we found no named imports but have a module path, record the module
+  if (results.length === 0 && modulePath) {
+    const segments = modulePath.split('/');
+    const lastSegment = segments[segments.length - 1];
+    if (lastSegment) {
+      results.push({ name: lastSegment, modulePath });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Extract parent class/interface names from heritage clauses.
+ */
+function extractHeritageNames(
+  node: Parser.SyntaxNode
+): Array<{ name: string; edgeType: 'extends' | 'implements' }> {
+  const results: Array<{ name: string; edgeType: 'extends' | 'implements' }> = [];
+
+  const edgeType: 'extends' | 'implements' =
+    node.type === 'implements_clause' ? 'implements' : 'extends';
+
+  // Look for type identifiers in the clause
+  const walk = (current: Parser.SyntaxNode) => {
+    if (current.type === 'identifier' || current.type === 'type_identifier') {
+      results.push({ name: current.text, edgeType });
+      return; // Don't recurse into this node's children
+    }
+    for (const child of current.children) {
+      walk(child);
+    }
+  };
+
+  walk(node);
+  return results;
+}
+
+/**
+ * Extract the exported name from an export statement.
+ */
+function extractExportName(node: Parser.SyntaxNode): string | null {
+  for (const child of node.children) {
+    if (child.type === 'identifier') return child.text;
+    if (child.type === 'function_declaration' || child.type === 'class_declaration') {
+      const nameChild = child.children.find((c) => c.type === 'identifier');
+      return nameChild?.text || null;
+    }
+    if (child.type === 'lexical_declaration' || child.type === 'variable_declaration') {
+      for (const decl of child.children) {
+        if (decl.type === 'variable_declarator') {
+          const nameChild = decl.children.find((c) => c.type === 'identifier');
+          return nameChild?.text || null;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 /**
