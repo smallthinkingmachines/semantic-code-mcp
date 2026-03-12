@@ -6,7 +6,7 @@
 import * as lancedb from '@lancedb/lancedb';
 import * as fs from 'fs';
 import type { CodeChunk } from '../chunker/index.js';
-import { validateId, validateIds } from '../utils/validation.js';
+import { validateIds } from '../utils/validation.js';
 
 export interface VectorRecord {
   /** Unique chunk ID */

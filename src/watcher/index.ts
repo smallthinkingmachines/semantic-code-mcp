@@ -13,7 +13,7 @@ import { embedBatch } from '../embedder/index.js';
 import { VectorStore, createVectorRecord, type VectorRecord } from '../store/index.js';
 import { getSupportedExtensions } from '../chunker/languages.js';
 import type { GraphStore } from '../graph/index.js';
-import type { GraphNode, GraphEdge, RawEdge, NodeKind } from '../graph/types.js';
+import type { GraphNode, RawEdge, NodeKind } from '../graph/types.js';
 import { resolveEdges } from '../graph/extractor.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -307,8 +307,8 @@ export async function indexDirectory(options: IndexerOptions): Promise<IndexStat
   const filesToDelete: string[] = [];
 
   // Graph data accumulated during indexing
-  let allGraphNodes: GraphNode[] = [];
-  let allRawEdges: RawEdge[] = [];
+  const allGraphNodes: GraphNode[] = [];
+  const allRawEdges: RawEdge[] = [];
 
   /**
    * Flush pending records to the store when threshold is reached.
